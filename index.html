@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HackShell</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23000'/><text x='3' y='24' font-size='22' fill='%23ff2233'>$_</text></svg>">
+</head>
+<body>
+
+<div id="boot-overlay">
+  <canvas id="boot-matrix"></canvas>
+  <div id="boot-content">
+    <div id="boot-logo">
+      <div id="boot-ascii"></div>
+      <div id="boot-tagline"></div>
+    </div>
+    <div id="boot-log"></div>
+    <div id="boot-bar-wrap">
+      <div id="boot-bar-label">INITIALIZING HACKSHELL...</div>
+      <div id="boot-bar-track"><div id="boot-bar-fill"></div></div>
+      <div id="boot-bar-pct">0%</div>
+    </div>
+  </div>
+</div>
+
+<div id="shell-wrapper">
+  <div id="topbar">
+    <div id="topbar-left">
+      <span class="topbar-dot dot-r"></span>
+      <span class="topbar-dot dot-g"></span>
+      <span class="topbar-dot dot-b"></span>
+      <span id="logo">HACK<span>SHELL</span></span>
+      <span id="logo-ver">v2.0</span>
+    </div>
+    <div id="topbar-center">
+      <span id="tb-node">node://hackshell-01</span>
+    </div>
+    <div id="topbar-right">
+      <span id="status-indicator">&#9679; ONLINE</span>
+      <span id="clock">00:00:00</span>
+    </div>
+  </div>
+
+  <div id="output-wrap">
+    <div id="output"></div>
+    <div id="suggestion-bar"></div>
+    <div id="input-row">
+      <div id="prompt-label">
+        <span class="p-dollar">$</span>
+        <span class="p-shell">hackshell</span><span class="p-at">@</span><span class="p-user">anonymous</span>
+        <span class="p-tilde" id="prompt-cwd">~</span>
+        <span class="p-arrow">&#10095;</span>
+      </div>
+      <input id="cmd-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+  </div>
+</div>
+
+<div id="autocomplete"></div>
+
+<div id="iframe-overlay">
+  <div id="iframe-topbar">
+    <div id="iframe-title-wrap">
+      <span class="topbar-dot dot-r"></span>
+      <img id="iframe-favicon" src="" alt="" style="width:14px;height:14px;border-radius:2px;display:none;margin-left:4px;vertical-align:middle">
+      <span id="iframe-title">[ Proxy ]</span>
+    </div>
+    <div id="iframe-controls">
+      <button id="iframe-popup"    title="Open in popup window">&#9645; Pop Out</button>
+      <button id="iframe-fullscr"  title="Fullscreen">&#9633; Fullscreen</button>
+      <button id="iframe-reload"   title="Reload">&#10227; Reload</button>
+      <button id="iframe-close"    title="Close overlay">&#10005; Exit</button>
+    </div>
+  </div>
+  <div id="iframe-retry-bar">
+    <span>&#8635; Trying: </span>
+    <span id="iframe-retry-node">direct</span>
+    <span id="iframe-retry-progress"></span>
+  </div>
+  <iframe id="proxy-frame" src="about:blank"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-top-navigation allow-downloads allow-pointer-lock"
+    allowfullscreen
+    allow="fullscreen; autoplay; clipboard-read; clipboard-write; encrypted-media; gamepad; geolocation; microphone; camera; display-capture; web-share; pointer-lock"
+  ></iframe>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>

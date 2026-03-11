@@ -1,0 +1,6 @@
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "ALLOWALL"
+    Content-Security-Policy = "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; frame-src *;"
+    X-Content-Type-Options = "nosniff"
