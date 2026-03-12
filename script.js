@@ -2559,6 +2559,476 @@ function largeBar(content, label, filename) {
   return h;
 }
 
+
+// ══════════════════════════════════════════════════════════
+//  xs — Chunked async encoder/decoder
+//  Processes in 250ms ticks. Compresses before encoding.
+//  Scales chunk size by file size so huge files work fine.
+// ══════════════════════════════════════════════════════════
+
+// ── Compression (DeflateRaw via CompressionStream API) ────
+// Returns Promise<Uint8Array>
+async function xsCompress(uint8) {
+  if(!window.CompressionStream) return uint8; // fallback: no compression
+  const cs   = new CompressionStream('deflate-raw');
+  const w    = cs.writable.getWriter();
+  const r    = cs.readable.getReader();
+  w.write(uint8);
+  w.close();
+  const chunks = [];
+  while(true) {
+    const {done, value} = await r.read();
+    if(done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((a,c)=>a+c.length,0);
+  const out   = new Uint8Array(total);
+  let off = 0;
+  for(const c of chunks) { out.set(c,off); off+=c.length; }
+  return out;
+}
+
+// Returns Promise<Uint8Array>
+async function xsDecompress(uint8) {
+  if(!window.DecompressionStream) return uint8;
+  const ds   = new DecompressionStream('deflate-raw');
+  const w    = ds.writable.getWriter();
+  const r    = ds.readable.getReader();
+  w.write(uint8);
+  w.close();
+  const chunks = [];
+  while(true) {
+    const {done, value} = await r.read();
+    if(done) break;
+    chunks.push(value);
+  }
+  const total = chunks.reduce((a,c)=>a+c.length,0);
+  const out   = new Uint8Array(total);
+  let off = 0;
+  for(const c of chunks) { out.set(c,off); off+=c.length; }
+  return out;
+}
+
+// ── Progress bar helpers ───────────────────────────────────
+let _xsProgressId = 0;
+function xsMakeProgress(label) {
+  const id = 'xsprog-' + (++_xsProgressId);
+  const div = document.createElement('div');
+  div.id = id;
+  div.className = 'output-block info xs-progress-wrap';
+  div.innerHTML = xsProgressHTML(label, 0, '…', id);
+  document.getElementById('output').appendChild(div);
+  document.getElementById('output').scrollTop = 99999;
+  return id;
+}
+
+function xsProgressHTML(label, pct, status, id) {
+  const bar = Math.round(pct / 5); // 0..20 blocks
+  const filled = '█'.repeat(bar);
+  const empty  = '░'.repeat(20 - bar);
+  const col    = pct < 33 ? '#ff4455' : pct < 66 ? '#ffcc00' : '#00d2b4';
+  return `<div class="xs-progress">` +
+    `<span class="tag tag-xs">xs</span> ` +
+    `<span style="color:var(--gray-light)">${esc(label)}</span> ` +
+    `<span style="color:${col};font-family:'JetBrains Mono',monospace;font-size:11px">${filled}${empty}</span> ` +
+    `<span class="xs-stat-n" style="font-size:11px">${Math.round(pct)}%</span> ` +
+    `<span style="color:var(--gray);font-size:10px">${esc(status)}</span>` +
+    `</div>`;
+}
+
+function xsUpdateProgress(id, pct, status) {
+  const el = document.getElementById(id);
+  if(!el) return;
+  const label = el.querySelector ? '' : '';
+  // Reuse the existing label from current inner content
+  el.innerHTML = xsProgressHTML(el.getAttribute('data-label')||'', pct, status, id);
+}
+
+function xsSetProgressLabel(id, label) {
+  const el = document.getElementById(id);
+  if(el) el.setAttribute('data-label', label);
+}
+
+function xsFinishProgress(id) {
+  const el = document.getElementById(id);
+  if(el) el.remove();
+}
+
+// ── Chunk size scaling ─────────────────────────────────────
+// Bigger file → smaller chunk → more yields → smoother UI
+// Target: process ~250ms per tick regardless of file size
+// Base: 64KB/tick for small files, scales down to ~8KB for 20MB+
+function xsChunkSize(totalBytes) {
+  const mb = totalBytes / (1024 * 1024);
+  if(mb < 0.5)  return 131072; // 128KB
+  if(mb < 2)    return 65536;  // 64KB
+  if(mb < 5)    return 32768;  // 32KB
+  if(mb < 10)   return 16384;  // 16KB
+  if(mb < 20)   return 8192;   //  8KB
+  return 4096;                  //  4KB for monsters
+}
+
+// Yield control back to event loop
+const xsYield = () => new Promise(r => setTimeout(r, 0));
+
+// ── Core: async chunked encode (bytes → invisible string) ─
+// bytes: Uint8Array  opts: {setId, password, onProgress}
+async function encodeAsync(bytes, {setId=DEFAULT_SET, password='', onProgress=null}={}) {
+  const def  = SETS[setId]||SETS[DEFAULT_SET];
+  const bpc  = def.bits;
+  const chars = def.chars;
+  const CHUNK = xsChunkSize(bytes.length);
+
+  // 1. Apply password XOR if needed (chunked)
+  let data = bytes;
+  if(password) {
+    if(onProgress) onProgress(0, 'deriving key…');
+    await xsYield();
+    const keyBytes = deriveKey(password);
+    const keystream = expandKey(keyBytes, data.length);
+    const xored = new Uint8Array(data.length);
+    for(let i=0;i<data.length;i++) xored[i] = data[i] ^ keystream[i];
+    data = xored;
+  }
+
+  // 2. Convert bytes → bit string in chunks → invisible chars
+  const parts = [];
+  const total = data.length;
+  let lastYield = performance.now();
+
+  for(let i=0;i<total;i+=CHUNK) {
+    const slice = data.subarray(i, Math.min(i+CHUNK, total));
+    let chunk = '';
+    for(let j=0;j<slice.length;j++) {
+      const b = slice[j];
+      // Manually unroll 8→bpc conversion for speed
+      if(bpc === 2) {
+        chunk += chars[(b>>6)&3] + chars[(b>>4)&3] + chars[(b>>2)&3] + chars[b&3];
+      } else if(bpc === 1) {
+        chunk += chars[(b>>7)&1]+chars[(b>>6)&1]+chars[(b>>5)&1]+chars[(b>>4)&1]+
+                 chars[(b>>3)&1]+chars[(b>>2)&1]+chars[(b>>1)&1]+chars[b&1];
+      } else if(bpc === 3) {
+        // 8 bits → need groups of 3, handle across byte boundaries via bit accumulator
+        // Use generic path for vs8
+        const bits = b.toString(2).padStart(8,'0');
+        for(let k=0;k<8;k+=3) chunk += chars[parseInt((bits+'00').slice(k,k+3),2)%chars.length];
+      } else {
+        const bits = b.toString(2).padStart(8,'0');
+        for(let k=0;k<8;k+=bpc) chunk += chars[parseInt(bits.padEnd(8,'0').slice(k,k+bpc).padEnd(bpc,'0'),2)%chars.length];
+      }
+    }
+    parts.push(chunk);
+
+    const now = performance.now();
+    if(now - lastYield >= 250) {
+      const pct = Math.round((i+slice.length)/total*85); // 0→85 during conversion
+      if(onProgress) onProgress(pct, `${fmt(i+slice.length)} / ${fmt(total)}`);
+      await xsYield();
+      lastYield = performance.now();
+    }
+  }
+
+  if(onProgress) onProgress(90, 'joining…');
+  await xsYield();
+  const hidden = parts.join('');
+  if(onProgress) onProgress(98, 'wrapping…');
+  await xsYield();
+  return MARK_S + hidden + MARK_E;
+}
+
+// ── Core: async chunked decode (invisible string → bytes) ─
+async function decodeAsync(encodedStr, {setId=DEFAULT_SET, password='', onProgress=null}={}) {
+  // 1. Extract hidden chars
+  if(onProgress) onProgress(2, 'extracting…');
+  await xsYield();
+
+  let hidden;
+  const si = encodedStr.indexOf(MARK_S), ei = encodedStr.indexOf(MARK_E);
+  if(si>=0 && ei>si) {
+    hidden = encodedStr.slice(si+MARK_S.length, ei);
+  } else {
+    const si2 = encodedStr.indexOf(MARK_S2), ei2 = encodedStr.indexOf(MARK_E2);
+    if(si2>=0 && ei2>si2) {
+      hidden = encodedStr.slice(si2+MARK_S2.length, ei2);
+    } else {
+      // Fallback: collect all invisible chars
+      hidden = [...encodedStr].filter(c=>{
+        const cp=c.codePointAt(0);
+        return (cp>=0x200B&&cp<=0x200F)||cp===0x2060||cp===0xFEFF||
+               cp===0x034F||cp===0x00AD||cp===0x17B4||cp===0x17B5||
+               cp===0x2061||cp===0x2062||cp===0x2063||cp===0x2064||
+               (cp>=0xE0000&&cp<=0xE007F);
+      }).join('');
+    }
+  }
+  if(!hidden) return null;
+
+  const def   = SETS[setId]||SETS[DEFAULT_SET];
+  const bpc   = def.bits;
+  const chars = def.chars;
+  const CHUNK = Math.max(4096, xsChunkSize(hidden.length));
+
+  // 2. Invisible chars → bytes (chunked)
+  if(onProgress) onProgress(5, 'decoding chars…');
+  await xsYield();
+
+  // We need to collect all byte values
+  const byteArr = [];
+  // For bpc=2 or 1: every N chars = 1 byte
+  const charsPerByte = Math.ceil(8/bpc);
+  const hiddenArr = [...hidden]; // spread for correct Unicode codepoint iteration
+  const totalChars = hiddenArr.length;
+  let lastYield = performance.now();
+
+  // Build byte array
+  let bitBuf = 0, bitCount = 0;
+  for(let i=0;i<totalChars;i++) {
+    const idx = chars.indexOf(hiddenArr[i]);
+    if(idx < 0) continue;
+    bitBuf = (bitBuf << bpc) | idx;
+    bitCount += bpc;
+    if(bitCount >= 8) {
+      bitCount -= 8;
+      byteArr.push((bitBuf >> bitCount) & 0xFF);
+      bitBuf &= (1<<bitCount)-1;
+    }
+
+    const now = performance.now();
+    if(i % 4096 === 0 && now - lastYield >= 250) {
+      const pct = 5 + Math.round(i/totalChars * 75);
+      if(onProgress) onProgress(pct, `${(i/1000).toFixed(0)}K / ${(totalChars/1000).toFixed(0)}K chars`);
+      await xsYield();
+      lastYield = performance.now();
+    }
+  }
+
+  if(!byteArr.length) return null;
+  let data = new Uint8Array(byteArr);
+
+  // 3. Apply password XOR if needed
+  if(password) {
+    if(onProgress) onProgress(82, 'decrypting…');
+    await xsYield();
+    const keyBytes = deriveKey(password);
+    const keystream = expandKey(keyBytes, data.length);
+    const xored = new Uint8Array(data.length);
+    for(let i=0;i<data.length;i++) xored[i] = data[i] ^ keystream[i];
+    data = xored;
+  }
+
+  if(onProgress) onProgress(90, 'decoding text…');
+  await xsYield();
+
+  const text = new TextDecoder('utf-8',{fatal:false}).decode(data);
+  if(onProgress) onProgress(99, 'done');
+  return text || null;
+}
+
+// ── Chunked file encode pipeline ──────────────────────────
+// fileBytes: Uint8Array, returns Promise<string> (the encoded invisible string)
+async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileName}) {
+  const totalOrig = fileBytes.length;
+
+  // Step 1: compress
+  xsSetProgressLabel(progressId, `${fileName} — compressing`);
+  xsUpdateProgress(progressId, 5, 'compressing…');
+  await xsYield();
+
+  let compressed;
+  try {
+    compressed = await xsCompress(fileBytes);
+  } catch(e) {
+    compressed = fileBytes; // fallback
+  }
+
+  const ratio = compressed.length / totalOrig;
+  const compressedMB = compressed.length / MB;
+  xsUpdateProgress(progressId, 15, `compressed ${fmt(totalOrig)} → ${fmt(compressed.length)} (${(ratio*100).toFixed(0)}%)`);
+  await xsYield();
+
+  // Step 2: base64 encode compressed bytes
+  xsSetProgressLabel(progressId, `${fileName} — base64`);
+  xsUpdateProgress(progressId, 18, 'converting to base64…');
+  await xsYield();
+
+  // Chunked base64 to avoid string size explosion
+  const BCHUNK = 65536;
+  const b64parts = [];
+  for(let i=0;i<compressed.length;i+=BCHUNK) {
+    const slice = compressed.subarray(i, Math.min(i+BCHUNK, compressed.length));
+    let bin = '';
+    for(let j=0;j<slice.length;j++) bin += String.fromCharCode(slice[j]);
+    b64parts.push(btoa(bin));
+    if(i % (BCHUNK*4) === 0 && i > 0) {
+      xsUpdateProgress(progressId, 18 + Math.round(i/compressed.length*7), 'base64…');
+      await xsYield();
+    }
+  }
+  const b64payload = b64parts.join('');
+  xsUpdateProgress(progressId, 25, `${fmt(b64payload.length)} b64 payload`);
+  await xsYield();
+
+  // Step 3: apply password to raw bytes of b64 string
+  let payloadBytes = new TextEncoder().encode(b64payload);
+  if(password) {
+    xsSetProgressLabel(progressId, `${fileName} — encrypting`);
+    xsUpdateProgress(progressId, 28, 'encrypting…');
+    await xsYield();
+    const keyBytes = deriveKey(password);
+    const keystream = expandKey(keyBytes, payloadBytes.length);
+    const xored = new Uint8Array(payloadBytes.length);
+    for(let i=0;i<payloadBytes.length;i++) xored[i] = payloadBytes[i]^keystream[i];
+    payloadBytes = xored;
+  }
+
+  // Step 4: convert bytes → invisible chars (chunked)
+  xsSetProgressLabel(progressId, `${fileName} — encoding`);
+  const def   = SETS[setId]||SETS[DEFAULT_SET];
+  const bpc   = def.bits;
+  const chars = def.chars;
+  const CHUNK = xsChunkSize(payloadBytes.length);
+  const parts = [MARK_S];
+  const total = payloadBytes.length;
+  let lastYield = performance.now();
+
+  for(let i=0;i<total;i+=CHUNK) {
+    const slice = payloadBytes.subarray(i, Math.min(i+CHUNK, total));
+    let chunk = '';
+    for(let j=0;j<slice.length;j++) {
+      const b = slice[j];
+      if(bpc === 2) {
+        chunk += chars[(b>>6)&3]+chars[(b>>4)&3]+chars[(b>>2)&3]+chars[b&3];
+      } else if(bpc === 1) {
+        chunk += chars[(b>>7)&1]+chars[(b>>6)&1]+chars[(b>>5)&1]+chars[(b>>4)&1]+
+                 chars[(b>>3)&1]+chars[(b>>2)&1]+chars[(b>>1)&1]+chars[b&1];
+      } else {
+        // Generic path (vs8 = 3bpc, combo)
+        for(let k=7;k>=0;k-=bpc) {
+          const bits = (b>>(Math.max(0,k-bpc+1))) & ((1<<bpc)-1);
+          chunk += chars[bits % chars.length];
+        }
+      }
+    }
+    parts.push(chunk);
+
+    const now = performance.now();
+    if(now - lastYield >= 250) {
+      const pct = 30 + Math.round((i+slice.length)/total * 65);
+      xsUpdateProgress(progressId, pct, `${fmt(i+slice.length)} / ${fmt(total)}`);
+      await xsYield();
+      lastYield = performance.now();
+    }
+  }
+
+  parts.push(MARK_E);
+  xsUpdateProgress(progressId, 97, 'joining…');
+  await xsYield();
+  const result = parts.join('');
+  xsUpdateProgress(progressId, 100, 'done');
+  await xsYield();
+  return result;
+}
+
+// ── Chunked file decode pipeline ──────────────────────────
+// encodedStr: string, returns Promise<Uint8Array> (original file bytes)
+async function decodeFilePipeline(encodedStr, {setId, password, progressId, fileName}) {
+  // Step 1: extract hidden portion
+  xsSetProgressLabel(progressId, `${fileName} — extracting`);
+  xsUpdateProgress(progressId, 2, 'locating payload…');
+  await xsYield();
+
+  let hidden;
+  const si = encodedStr.indexOf(MARK_S), ei = encodedStr.indexOf(MARK_E);
+  if(si>=0 && ei>si) hidden = encodedStr.slice(si+MARK_S.length, ei);
+  else {
+    const si2 = encodedStr.indexOf(MARK_S2), ei2 = encodedStr.indexOf(MARK_E2);
+    hidden = (si2>=0&&ei2>si2) ? encodedStr.slice(si2+MARK_S2.length,ei2) : null;
+  }
+  if(!hidden) return null;
+
+  const def   = SETS[setId]||SETS[DEFAULT_SET];
+  const bpc   = def.bits;
+  const chars = def.chars;
+
+  xsUpdateProgress(progressId, 5, `${fmt(hidden.length)} invisible chars`);
+  await xsYield();
+
+  // Step 2: invisible chars → bytes (chunked)
+  xsSetProgressLabel(progressId, `${fileName} — decoding`);
+  const hiddenArr  = [...hidden];
+  const totalChars = hiddenArr.length;
+  const byteArr    = [];
+  let bitBuf = 0, bitCount = 0;
+  let lastYield = performance.now();
+
+  for(let i=0;i<totalChars;i++) {
+    const idx = chars.indexOf(hiddenArr[i]);
+    if(idx < 0) continue;
+    bitBuf = (bitBuf << bpc) | idx;
+    bitCount += bpc;
+    if(bitCount >= 8) {
+      bitCount -= 8;
+      byteArr.push((bitBuf >> bitCount) & 0xFF);
+      bitBuf &= (1<<bitCount)-1;
+    }
+
+    const now = performance.now();
+    if(i % 8192 === 0 && now - lastYield >= 250) {
+      const pct = 5 + Math.round(i/totalChars * 55);
+      xsUpdateProgress(progressId, pct, `${(i/1000).toFixed(0)}K / ${(totalChars/1000).toFixed(0)}K chars`);
+      await xsYield();
+      lastYield = performance.now();
+    }
+  }
+
+  if(!byteArr.length) return null;
+  let payloadBytes = new Uint8Array(byteArr);
+
+  // Step 3: decrypt if password
+  if(password) {
+    xsSetProgressLabel(progressId, `${fileName} — decrypting`);
+    xsUpdateProgress(progressId, 62, 'decrypting…');
+    await xsYield();
+    const keyBytes  = deriveKey(password);
+    const keystream = expandKey(keyBytes, payloadBytes.length);
+    const xored = new Uint8Array(payloadBytes.length);
+    for(let i=0;i<payloadBytes.length;i++) xored[i] = payloadBytes[i]^keystream[i];
+    payloadBytes = xored;
+  }
+
+  // Step 4: base64 decode → compressed bytes
+  xsSetProgressLabel(progressId, `${fileName} — decoding b64`);
+  xsUpdateProgress(progressId, 65, 'base64 decode…');
+  await xsYield();
+
+  let compressedBytes;
+  try {
+    const b64str = new TextDecoder().decode(payloadBytes);
+    const bin = atob(b64str);
+    compressedBytes = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) compressedBytes[i] = bin.charCodeAt(i);
+  } catch(e) {
+    return null;
+  }
+
+  // Step 5: decompress
+  xsSetProgressLabel(progressId, `${fileName} — decompressing`);
+  xsUpdateProgress(progressId, 80, 'decompressing…');
+  await xsYield();
+
+  let fileBytes;
+  try {
+    fileBytes = await xsDecompress(compressedBytes);
+  } catch(e) {
+    fileBytes = compressedBytes; // not compressed, return raw
+  }
+
+  xsUpdateProgress(progressId, 100, `done — ${fmt(fileBytes.length)}`);
+  await xsYield();
+  return fileBytes;
+}
+
+
 // ─── File picker helper ───────────────────────────────────
 function pickFile(accept='*/*') {
   return new Promise((res,rej) => {
@@ -2735,144 +3205,110 @@ function cmdFile(args) {
     if(pw)  fileOpts.password = pw[1].replace(/^['"`]|['"`]$/g,'');
     if(set) fileOpts.setId    = set[1];
   }
+  const setId    = fileOpts.setId    || DEFAULT_SET;
+  const password = fileOpts.password || '';
 
-  appendBlock(`<span class="tag tag-xs">xs FILE ${mode.toUpperCase()}</span> Pick any file — zip, binary, text, anything…`,'info');
+  appendBlock(`<span class="tag tag-xs">xs FILE ${mode.toUpperCase()}</span> Pick any file — zip, binary, image, anything…`,'info');
 
   pickFile('*/*').then(file => {
-    appendBlock(`<span class="tag tag-xs">xs FILE</span> Reading <span class="sh-string">${esc(file.name)}</span> <span class="sh-comment">(${fmt(file.size)})</span>…`,'info');
+    const fileName = file.name;
+    appendBlock(`<span class="tag tag-xs">xs FILE</span> Got <span class="sh-string">${esc(fileName)}</span> <span class="sh-comment">(${fmt(file.size)})</span>`,'info');
 
     if(mode === 'enc') {
-      // Read as ArrayBuffer → base64 — works for ALL file types including zip/binary
-      return readFile(file).then(b64payload => {
-        let encoded;
-        try {
-          encoded = encode(b64payload, {
-            setId:    fileOpts.setId    || DEFAULT_SET,
-            password: fileOpts.password || '',
-            b64:      false, // payload is already base64
-          });
-        } catch(e) {
-          appendBlock(`<span class="tag tag-err">ERROR</span> xs file enc: ${esc(e.message)}`,'error');
-          return;
-        }
+      const progressId = xsMakeProgress(fileName + ' — reading');
+      xsSetProgressLabel(progressId, fileName + ' — reading');
+      xsUpdateProgress(progressId, 1, 'reading file…');
 
-        const inBytes  = _te(b64payload).length;
-        const outBytes = _te(encoded).length;
-        const outLarge = outBytes > MB;
-        const defName  = SETS[fileOpts.setId||DEFAULT_SET]?.name || DEFAULT_SET;
+      readFile(file).then(fileBytes => {
+        return encodeFilePipeline(fileBytes, {setId, password, progressId, fileName});
+      }).then(encoded => {
+        xsFinishProgress(progressId);
+        const outLarge = encoded.length > MB;
+        const defName  = SETS[setId]?.name || setId;
 
         let html = `<div class="xs-card">`;
-        html += `<div class="xs-header"><span class="tag tag-xs">xs FILE ENC</span> <span class="sh-string">${esc(file.name)}</span></div>`;
+        html += `<div class="xs-header"><span class="tag tag-xs">xs FILE ENC</span> <span class="sh-string">${esc(fileName)}</span></div>`;
         html += `<div class="xs-meta-row">`;
         html += `<span class="xs-badge">${esc(defName)}</span>`;
-        html += `<span class="xs-badge">${file.type||'binary'}</span>`;
-        if(fileOpts.password) html += `<span class="xs-badge xs-badge-pw">&#128274; password</span>`;
+        html += `<span class="xs-badge">${esc(file.type||'binary')}</span>`;
+        if(password) html += `<span class="xs-badge xs-badge-pw">&#128274; password</span>`;
+        if(window.CompressionStream) html += `<span class="xs-badge" style="background:rgba(0,255,136,0.07);border-color:rgba(0,255,136,0.2);color:var(--green)">&#9650; compressed</span>`;
         html += `</div>`;
         html += `<div class="xs-stats">`;
         html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(file.size)}</span> original</span>`;
-        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(inBytes)}</span> b64 payload</span>`;
-        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(outBytes)}</span> encoded</span>`;
-        html += `<span class="xs-stat"><span class="xs-stat-n">${countInvisible(encoded).toLocaleString()}</span> invisible chars</span>`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(encoded.length)}</span> encoded chars</span>`;
         html += `</div>`;
 
         if(outLarge) {
-          html += largeBar(encoded, `Encoded: ${file.name}`, file.name+'.xsenc.txt');
+          html += largeBar(encoded, `Encoded: ${fileName}`, fileName+'.xsenc.txt');
         } else {
           const cid = window._cpPut(encoded);
-          html += `<div class="xs-output-label">ENCODED OUTPUT <span class="xs-hint">(paste anywhere)</span></div>`;
+          html += `<div class="xs-output-label">ENCODED OUTPUT <span class="xs-hint">(paste or export)</span></div>`;
           html += `<div class="xs-output-box">${esc(encoded)}</div>`;
           html += `<div class="xs-footer">`;
           html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
-          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(file.name)}.xsenc.txt')">&#8681; Export .txt</button>`;
-          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(file.name)}.xsenc.txt')">&#128269; Open in window</button>`;
+          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(fileName)}.xsenc.txt')">&#8681; Export .txt</button>`;
+          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(fileName)}.xsenc.txt')">&#128269; Open in window</button>`;
           html += `</div>`;
         }
         html += `</div>`;
         appendBlock(html,'success');
+      }).catch(e => {
+        xsFinishProgress(progressId);
+        appendBlock(`<span class="tag tag-err">ERROR</span> xs file enc: ${esc(e.message)}`,'error');
       });
 
     } else {
-      // DECODE — read as text to preserve invisible chars
-      return new Promise((res,rej) => {
+      const progressId = xsMakeProgress(fileName + ' — reading');
+      xsUpdateProgress(progressId, 1, 'reading encoded file…');
+
+      new Promise((res,rej) => {
         const r = new FileReader();
         r.onerror = ()=>rej(new Error('Read failed'));
-        r.onload  = e => res(e.target.result);
+        r.onload  = e=>res(e.target.result);
         r.readAsText(file);
       }).then(content => {
-        const invCount = countInvisible(content);
+        const invCount = [...content].filter(c=>{
+          const cp=c.codePointAt(0);
+          return (cp>=0x200B&&cp<=0x200F)||cp===0x2060||cp===0xFEFF||
+                 cp===0x034F||cp===0x00AD||cp===0x17B4||cp===0x17B5||
+                 (cp>=0xE0000&&cp<=0xE007F);
+        }).length;
         if(!invCount) {
-          appendBlock(`<span class="tag tag-warn">xs FILE DEC</span> No invisible characters in <span class="sh-string">${esc(file.name)}</span>.`,'warn');
-          return;
+          xsFinishProgress(progressId);
+          appendBlock(`<span class="tag tag-warn">xs FILE DEC</span> No invisible chars in <span class="sh-string">${esc(fileName)}</span>.`,'warn');
+          return Promise.resolve(null);
         }
+        xsUpdateProgress(progressId, 3, `${invCount.toLocaleString()} invisible chars found`);
+        return decodeFilePipeline(content, {setId, password, progressId, fileName});
+      }).then(fileBytes => {
+        if(!fileBytes) return;
+        xsFinishProgress(progressId);
 
-        let result;
-        try {
-          result = decode(content, {
-            setId:      fileOpts.setId    || DEFAULT_SET,
-            password:   fileOpts.password || '',
-            b64:        false, // raw b64 payload — we'll decode below
-            autoDetect: true,
-          });
-        } catch(e) {
-          appendBlock(`<span class="tag tag-err">ERROR</span> xs file dec: ${esc(e.message)}`,'error');
-          return;
-        }
+        const origName = fileName.replace(/\.xsenc\.txt$/i,'');
+        const mime = file.type||'application/octet-stream';
+        const blob = new Blob([fileBytes], {type: mime});
+        const url  = URL.createObjectURL(blob);
 
-        if(!result) {
-          appendBlock(`<span class="tag tag-warn">xs FILE DEC</span> Could not decode ${invCount.toLocaleString()} invisible chars from <span class="sh-string">${esc(file.name)}</span>${fileOpts.password?'':" — try --password=..."}.`,'warn');
-          return;
-        }
-
-        // result is base64 of original file — reconstruct it
-        let reconstructedBlob, reconstructedUrl;
-        try {
-          const bin = atob(result);
-          const bytes = new Uint8Array(bin.length);
-          for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
-          reconstructedBlob = new Blob([bytes], {type: file.type||'application/octet-stream'});
-          reconstructedUrl  = URL.createObjectURL(reconstructedBlob);
-        } catch(e) {
-          // Not a binary file — treat result as plain text
-          reconstructedBlob = null;
-        }
-
-        const outLarge = result.length > MB;
         let html = `<div class="xs-card">`;
-        html += `<div class="xs-header"><span class="tag tag-xs">xs FILE DEC</span> <span class="sh-string">${esc(file.name)}</span></div>`;
-        html += `<div class="xs-meta-row">`;
-        html += `<span class="xs-badge">${invCount.toLocaleString()} invisible chars found</span>`;
-        if(fileOpts.password) html += `<span class="xs-badge xs-badge-pw">&#128274; password used</span>`;
+        html += `<div class="xs-header"><span class="tag tag-xs">xs FILE DEC</span> <span class="sh-string">${esc(fileName)}</span></div>`;
+        html += `<div class="xs-meta-row"><span class="xs-badge">file recovered</span>`;
+        if(password) html += `<span class="xs-badge xs-badge-pw">&#128274; password used</span>`;
         html += `</div>`;
         html += `<div class="xs-stats">`;
-        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(file.size)}</span> file read</span>`;
-        if(reconstructedBlob) html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(reconstructedBlob.size)}</span> recovered</span>`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(file.size)}</span> encoded</span>`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(fileBytes.length)}</span> recovered</span>`;
         html += `</div>`;
-
-        if(reconstructedBlob) {
-          // Binary file recovery — offer download
-          const origName = file.name.replace(/\.xsenc\.txt$/,'');
-          html += `<div class="xs-output-label">RECOVERED FILE</div>`;
-          html += `<div class="xs-large-bar">`;
-          html += `<div class="xs-large-info"><span class="xs-large-label">${esc(origName)}</span>`;
-          html += `<span class="xs-large-size">&#128196; ${fmt(reconstructedBlob.size)} — binary file recovered</span></div>`;
-          html += `<div class="xs-large-btns">`;
-          html += `<a href="${reconstructedUrl}" download="${esc(origName)}" style="text-decoration:none"><button class="proxy-btn">&#8681; Download recovered file</button></a>`;
-          html += `</div></div>`;
-        } else if(outLarge) {
-          html += largeBar(result, `Decoded payload`, file.name+'.decoded.txt');
-        } else {
-          const cid = window._cpPut(result);
-          html += `<div class="xs-output-label">REVEALED PAYLOAD</div>`;
-          html += `<div class="xs-revealed">${esc(result.slice(0,2000)+(result.length>2000?'…':''))}</div>`;
-          html += `<div class="xs-footer">`;
-          html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
-          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(file.name)}.decoded.txt')">&#8681; Export</button>`;
-          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(file.name)}.decoded.txt')">&#128269; Open in window</button>`;
-          html += `<span class="nil-char-count">${[...result].length} chars</span>`;
-          html += `</div>`;
-        }
-        html += `</div>`;
+        html += `<div class="xs-large-bar">`;
+        html += `<div class="xs-large-info"><span class="xs-large-label">${esc(origName)}</span>`;
+        html += `<span class="xs-large-size">&#10003; ${fmt(fileBytes.length)} recovered</span></div>`;
+        html += `<div class="xs-large-btns">`;
+        html += `<a href="${url}" download="${esc(origName)}" style="text-decoration:none" onclick="setTimeout(()=>URL.revokeObjectURL(this.href),30000)"><button class="proxy-btn">&#8681; Download ${esc(origName)}</button></a>`;
+        html += `</div></div></div>`;
         appendBlock(html,'success');
+      }).catch(e => {
+        xsFinishProgress(progressId);
+        appendBlock(`<span class="tag tag-err">ERROR</span> xs file dec: ${esc(e.message)}`,'error');
       });
     }
   }).catch(e => {
