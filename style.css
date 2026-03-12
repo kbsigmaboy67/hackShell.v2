@@ -1110,3 +1110,18 @@ body::after {
   gap: 6px;
   flex-wrap: wrap;
 }
+
+/* xs — chunked progress bar */
+.xs-progress-wrap {
+  padding: 6px 12px !important;
+  border-left: 3px solid #00d2b4 !important;
+  background: rgba(0,210,180,0.03) !important;
+}
+.xs-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.4;
+}
