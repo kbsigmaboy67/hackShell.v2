@@ -5,7 +5,6 @@
 
 // ── Proxy registry (obfuscated) ──
 // ── Proxy registry (obfuscated via atob) ──
-  
 const _px = [
   // ─── Web Proxies ───
   { n:'RammerHead',        t:'Web Proxy',   cat:'proxy', d:'Full-featured web proxy. Bypasses most network filters.' ,      _:atob('aHR0cHM6Ly9lZmx5LjEwOC0xODEtMzItNzcuc3NsaXAuaW8v') },
@@ -114,6 +113,28 @@ updateClock();
 
 // ── Output helpers ──
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ── Global clipboard store — avoids ALL onclick escaping issues ──
+window._cpStore = {};
+window._cpId = 0;
+// Store text, return an id
+window._cpPut = function(text){ const id='cp'+(++window._cpId); window._cpStore[id]=text; return id; };
+// Copy stored text, show feedback
+window._cp = function(id){ 
+  const t=window._cpStore[id]; 
+  if(t===undefined) return;
+  navigator.clipboard.writeText(t).then(()=>{
+    appendBlock('<span class="tag tag-ok">COPIED</span>','success');
+  }).catch(()=>{
+    // fallback
+    const ta=document.createElement('textarea');
+    ta.value=t; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    appendBlock('<span class="tag tag-ok">COPIED</span> (fallback)','success');
+  });
+};
 
 function appendRaw(html){
   const d=document.createElement('div');
@@ -1251,7 +1272,7 @@ Uptime:   <span class="sh-number">${Math.floor(performance.now()/1000)}s</span>`
       const p=findApp(name);
       if(!p) return appendBlock(`<span class="tag tag-err">ERROR</span> glink: app not found: <span class="sh-command">${esc(name)}</span>`,'error');
       const link=hashLink(p.n);
-      appendBlock(`<span class="tag tag-ok">LINK</span> Share link for <span class="sh-variable">${esc(p.n)}</span>:<br><span style="color:var(--blue);cursor:pointer;font-size:12px" onclick="navigator.clipboard.writeText('${esc(link)}').then(()=>appendBlock('<span class=\'tag tag-ok\'>OK</span> Copied!','success'))">${esc(link)}</span><br><span style="color:var(--gray);font-size:11px">Click the link above to copy it to clipboard.</span>`,'success');
+      appendBlock(`<span class="tag tag-ok">LINK</span> Share link for <span class="sh-variable">${esc(p.n)}</span>:<br><span style="color:var(--blue);cursor:pointer;font-size:12px" onclick="window._cp('${window._cpPut(link)}')">${esc(link)}</span><br><span style="color:var(--gray);font-size:11px">Click the link above to copy it to clipboard.</span>`,'success');
     }
   },
   nodeIL:   { desc:'Encryption/decryption engine — 55+ ciphers, stackable, matrix output', usage:'nodeIL <enc|dec|push|pop|stack|list|preset|demo|charset|nums|density> [opts]',
@@ -1882,10 +1903,10 @@ function cmdGadd(args) {
   const link = hashLink(name);
   let html = `<span class="tag tag-ok">SAVED</span> <span class="sh-variable">${esc(name)}</span> added to custom apps!<br>`;
   html += `<span style="color:var(--gray-mid);font-size:11px">Share link (click to copy):</span><br>`;
-  html += `<span style="color:var(--blue);cursor:pointer;font-size:11px" onclick="navigator.clipboard.writeText('${esc(link)}').then(()=>appendBlock('<span class=\\'tag tag-ok\\'>OK</span> Copied!','success'))">${esc(link)}</span><br>`;
+  html += `<span style="color:var(--blue);cursor:pointer;font-size:11px" onclick="window._cp('${window._cpPut(link)}')">${esc(link)}</span><br>`;
   html += `<div style="margin-top:6px;display:flex;gap:8px">`;
   html += `<button class="proxy-btn" onclick="window._launch('${esc(name)}')">&#9654; Launch now</button>`;
-  html += `<button class="proxy-btn" style="border-color:var(--purple-dim);color:var(--purple)" onclick="navigator.clipboard.writeText('${esc(link)}').then(()=>appendBlock('<span class=\\'tag tag-ok\\'>OK</span> Copied!','success'))">&#128279; Copy link</button>`;
+  html += `<button class="proxy-btn" style="border-color:var(--purple-dim);color:var(--purple)" onclick="window._cp('${window._cpPut(link)}')">&#128279; Copy link</button>`;
   html += `</div>`;
   appendBlock(html, 'success');
 }
@@ -2187,7 +2208,7 @@ const NIL = (() => {
       let ciphers=cid?[{id:cid,key}]:_stack.length?_stack:[{id:'xor',key}];
       let bytes=toBytes(text);const trail=[];
       for(const {id,key:k} of ciphers){const c=CIPHERS[id];if(!c){appendBlock(`<span class="tag tag-warn">WARN</span> Unknown cipher: ${esc(id)}`,'warn');continue;}bytes=c.enc(bytes,k);trail.push(`<span class="sh-builtin">${esc(id)}</span>(<span class="sh-string">${esc(k)}</span>)`);}
-      appendBlock(`<span class="tag tag-hack">ENCRYPT</span> ${trail.join(' → ')}<br>${renderOutput(bytes,'CIPHERTEXT')}<div style="margin-top:6px"><button class="proxy-btn" style="font-size:10px" onclick="navigator.clipboard.writeText(${JSON.stringify(fromBytes(bytes))}).then(()=>appendBlock('<span class=\\'tag tag-ok\\'>OK</span> Copied','success'))">&#128203; Copy Ciphertext</button></div>`,'info');
+      appendBlock(`<span class="tag tag-hack">ENCRYPT</span> ${trail.join(' → ')}<br>${renderOutput(bytes,'CIPHERTEXT')}<div style="margin-top:6px"><button class="proxy-btn" style="font-size:10px" onclick="window._cp('${window._cpPut(fromBytes(bytes))}')">&#128203; Copy Ciphertext</button></div>`,'info');
       VARS['NIL_LAST']=fromBytes(bytes);
 
     } else if(sub==='dec'||sub==='decrypt'){
@@ -2321,518 +2342,570 @@ window._runNILCmd = function(cmd){
 //  Hides text inside invisible Unicode chars, with password
 // ══════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════
+//  xs  —  Zero-Width Steganographic Encoder
+//  Hides ANY content (text/binary) in invisible Unicode
+//  Supports passwords, cover text, file upload, 1MB+ guard
+// ══════════════════════════════════════════════════════════
+
 const XS = (() => {
 'use strict';
 
-// ─── Zero-width / transparent character sets ──────────────
-// Each set maps bit patterns to genuinely invisible Unicode
-const SETS = {
+// ─── Constants ───────────────────────────────────────────
+const MB = 1048576; // 1 MB
 
-  // 4-symbol set: maps 2 bits per char (most compact visible output)
-  'zw4': {
+// ─── Zero-width character sets ───────────────────────────
+const SETS = {
+  zw4: {
     bits: 2,
-    chars: ['\u200B','\u200C','\u200D','\u2060'], // ZWS, ZWNJ, ZWJ, WJ
+    chars: ['\u200B','\u200C','\u200D','\u2060'],
     name: 'Zero-width 4 (ZWS/ZWNJ/ZWJ/WJ)',
   },
-
-  // 2-symbol set: maps 1 bit per char (maximum compatibility)
-  'zw2': {
+  zw2: {
     bits: 1,
-    chars: ['\u200B','\u200C'], // ZWS, ZWNJ
+    chars: ['\u200B','\u200C'],
     name: 'Zero-width 2 (ZWS/ZWNJ)',
   },
-
-  // 8-symbol set using variation selectors + zero-width
-  'vs8': {
+  vs8: {
     bits: 3,
     chars: ['\u200B','\u200C','\u200D','\u2060','\uFEFF','\u200E','\u200F','\u202C'],
     name: 'Variation/Control 8-symbol (3 bits/char)',
   },
-
-  // Tag characters (U+E0000 block) — 1 bit per char, ultra-clean
-  'tag': {
+  tag: {
     bits: 1,
-    chars: ['\u{E0020}','\u{E0021}'], // Tag space, Tag !
+    chars: ['\u{E0020}','\u{E0021}'],
     name: 'Unicode Tag block (U+E0020/E0021)',
   },
-
-  // Combining invisibles: combines + joiners — looks like decoration noise on adjacent chars
-  'combo': {
+  combo: {
     bits: 2,
-    chars: ['\u034F','\u00AD','\u17B4','\u17B5'], // CGJ, SHY, Khmer invis, Khmer invis2
+    chars: ['\u034F','\u00AD','\u17B4','\u17B5'],
     name: 'Combining invisible (CGJ/SHY/Khmer)',
   },
-
 };
-
 const DEFAULT_SET = 'zw4';
 
-// ─── Header/footer markers (all invisible) ────────────────
-// Used to delimit the hidden payload so extraction is reliable
-const MARK_START = '\u{E0001}'; // Language tag begin
-const MARK_END   = '\u{E007F}'; // Language tag end
-// Fallback if tag chars unavailable:
-const MARK_START_FB = '\u2064\u2061'; // invisible plus + invisible function app
-const MARK_END_FB   = '\u2063\u2062'; // invisible separator + invisible times
+// Payload delimiters (invisible)
+const MARK_S = '\u{E0001}';
+const MARK_E = '\u{E007F}';
+const MARK_S2 = '\u2064\u2061';
+const MARK_E2 = '\u2063\u2062';
 
-// ─── Utilities ────────────────────────────────────────────
-const _te  = s => new TextEncoder().encode(s);
-const _td  = b => new TextDecoder('utf-8',{fatal:false}).decode(b);
-const _b64e= s => { try{return btoa(unescape(encodeURIComponent(s)));}catch(e){return btoa(s);} };
-const _b64d= s => { try{return decodeURIComponent(escape(atob(s)));}catch(e){return s;} };
+// ─── Encoding utils ──────────────────────────────────────
+const _te   = s => new TextEncoder().encode(s);
+const _td   = b => new TextDecoder('utf-8',{fatal:false}).decode(b);
+const _b64e = s => { try{return btoa(unescape(encodeURIComponent(s)));}catch(e){return btoa(s);} };
+const _b64d = s => { try{return decodeURIComponent(escape(atob(s)));}catch(e){try{return atob(s);}catch(e2){return s;}} };
 
-// ─── Password-based key stretching (simple PBKDF) ─────────
-function deriveKey(password, salt='xs-hackshell', rounds=1000) {
-  if(!password) return null;
-  // Simple iterative hash: mix password + salt through many rounds
-  let key = [..._te(password + salt)];
-  for(let r=0;r<rounds;r++){
-    key = key.map((b,i)=> ((b * 31 + key[(i+1)%key.length] + r) & 0xFF));
-  }
-  return key; // byte array keystream seed
+function fmt(bytes) {
+  if(bytes < 1024) return bytes+'B';
+  if(bytes < MB)   return (bytes/1024).toFixed(1)+'KB';
+  return (bytes/MB).toFixed(2)+'MB';
 }
 
-// Expand key to arbitrary length using LCG
+// ─── Key derivation ──────────────────────────────────────
+function deriveKey(pw, salt='xs-hackshell', rounds=1000) {
+  if(!pw) return null;
+  let key = [..._te(pw+salt)];
+  for(let r=0;r<rounds;r++) key = key.map((b,i)=>((b*31+key[(i+1)%key.length]+r)&0xFF));
+  return key;
+}
 function expandKey(keyBytes, length) {
-  if(!keyBytes || !keyBytes.length) return null;
+  if(!keyBytes?.length) return null;
   const out = new Uint8Array(length);
-  let acc = keyBytes.reduce((a,b)=>((a*1664525 + b + 1013904223)&0xFFFFFFFF)>>>0, 0);
-  for(let i=0;i<length;i++){
-    acc = ((acc * 1664525) + 1013904223) & 0xFFFFFFFF;
-    out[i] = (acc >>> 8) & 0xFF;
-  }
+  let acc = keyBytes.reduce((a,b)=>((a*1664525+b+1013904223)&0xFFFFFFFF)>>>0, 0);
+  for(let i=0;i<length;i++){acc=((acc*1664525)+1013904223)&0xFFFFFFFF; out[i]=(acc>>>8)&0xFF;}
   return out;
 }
-
-// XOR bytes with keystream
 function applyKey(bytes, keyBytes) {
   if(!keyBytes) return bytes;
   const key = expandKey(keyBytes, bytes.length);
-  return bytes.map((b,i) => b ^ key[i]);
+  return bytes.map((b,i)=>b^key[i]);
 }
 
-// ─── Core encode ──────────────────────────────────────────
-function encode(plaintext, opts={}) {
-  const {
-    setId   = DEFAULT_SET,
-    password= '',
-    cover   = '',        // optional visible cover text to embed hidden text inside
-    b64     = true,      // base64 the payload for clean byte handling
-  } = opts;
+// ─── Core encode / decode ────────────────────────────────
+function encode(plaintext, {setId=DEFAULT_SET, password='', cover='', b64=true}={}) {
+  const def = SETS[setId]||SETS[DEFAULT_SET];
+  const bpc = def.bits;
+  const chars = def.chars;
 
-  const setDef = SETS[setId] || SETS[DEFAULT_SET];
-  const bitsPerChar = setDef.bits;
-  const chars = setDef.chars;
-  const symbolCount = chars.length; // must equal 2^bitsPerChar
-
-  // 1. Prepare payload bytes
   let payload = b64 ? _b64e(plaintext) : plaintext;
   let bytes = Array.from(_te(payload));
+  if(password) bytes = Array.from(applyKey(new Uint8Array(bytes), deriveKey(password)));
 
-  // 2. Apply password XOR if provided
-  if(password) {
-    const keyBytes = deriveKey(password);
-    bytes = Array.from(applyKey(new Uint8Array(bytes), keyBytes));
-  }
-
-  // 3. Convert bytes to bit string
-  const bits = bytes.map(b => b.toString(2).padStart(8,'0')).join('');
-
-  // 4. Convert bits to invisible chars
-  // bitsPerChar bits → one invisible char
+  const bits = bytes.map(b=>b.toString(2).padStart(8,'0')).join('');
   let hidden = '';
-  for(let i=0; i<bits.length; i+=bitsPerChar) {
-    const chunk = bits.slice(i, i+bitsPerChar).padEnd(bitsPerChar,'0');
-    const idx = parseInt(chunk, 2);
-    hidden += chars[idx % symbolCount];
+  for(let i=0;i<bits.length;i+=bpc) {
+    const chunk = bits.slice(i,i+bpc).padEnd(bpc,'0');
+    hidden += chars[parseInt(chunk,2) % chars.length];
   }
 
-  // 5. Wrap with markers
-  let marker_s, marker_e;
-  try {
-    // Test if tag chars work in this environment
-    const test = '\u{E0001}'; marker_s = MARK_START; marker_e = MARK_END;
-  } catch(e) {
-    marker_s = MARK_START_FB; marker_e = MARK_END_FB;
-  }
-
-  const payload_wrapped = marker_s + hidden + marker_e;
-
-  // 6. Embed in cover text or return standalone
-  if(cover && cover.trim()) {
-    // Distribute invisible chars throughout the cover text naturally
-    // Insert the whole block after the first word for plausibility
-    const words = cover.split(' ');
-    if(words.length <= 1) return cover + payload_wrapped;
-    // Insert after word at ~30% point
-    const insertAt = Math.max(1, Math.floor(words.length * 0.3));
-    return words.slice(0,insertAt).join(' ') + payload_wrapped + ' ' + words.slice(insertAt).join(' ');
-  }
-
-  return payload_wrapped;
+  const wrapped = MARK_S + hidden + MARK_E;
+  if(!cover?.trim()) return wrapped;
+  const words = cover.split(' ');
+  const at = Math.max(1, Math.floor(words.length*0.3));
+  return words.slice(0,at).join(' ') + wrapped + ' ' + words.slice(at).join(' ');
 }
 
-// ─── Core decode ──────────────────────────────────────────
-function decode(encoded, opts={}) {
-  const {
-    setId    = DEFAULT_SET,
-    password = '',
-    b64      = true,
-    autoDetect = true,  // try all sets if specified set fails
-  } = opts;
-
-  // Try to extract payload from between markers
+function decode(encoded, {setId=DEFAULT_SET, password='', b64=true, autoDetect=true}={}) {
   function extractHidden(text) {
-    // Try tag markers
-    let start = text.indexOf(MARK_START);
-    let end   = text.indexOf(MARK_END);
-    if(start>=0 && end>start) return text.slice(start+MARK_START.length, end);
-
-    // Try fallback markers
-    start = text.indexOf(MARK_START_FB);
-    end   = text.indexOf(MARK_END_FB);
-    if(start>=0 && end>start) return text.slice(start+MARK_START_FB.length, end);
-
-    // No markers — try to extract ALL invisible chars from text
-    return [...text].filter(c => {
-      const cp = c.codePointAt(0);
-      return (cp>=0x200B && cp<=0x200F) || cp===0x2060 || cp===0xFEFF ||
-             cp===0x034F || cp===0x00AD || cp===0x17B4 || cp===0x17B5 ||
-             cp===0x2061 || cp===0x2062 || cp===0x2063 || cp===0x2064 ||
-             (cp>=0xE0000 && cp<=0xE007F);
+    let s = text.indexOf(MARK_S), e = text.indexOf(MARK_E);
+    if(s>=0 && e>s) return text.slice(s+MARK_S.length, e);
+    s = text.indexOf(MARK_S2); e = text.indexOf(MARK_E2);
+    if(s>=0 && e>s) return text.slice(s+MARK_S2.length, e);
+    return [...text].filter(c=>{
+      const cp=c.codePointAt(0);
+      return (cp>=0x200B&&cp<=0x200F)||cp===0x2060||cp===0xFEFF||
+             cp===0x034F||cp===0x00AD||cp===0x17B4||cp===0x17B5||
+             cp===0x2061||cp===0x2062||cp===0x2063||cp===0x2064||
+             (cp>=0xE0000&&cp<=0xE007F);
     }).join('');
   }
 
-  function tryDecode(hidden, setDef) {
-    const chars = setDef.chars;
-    const bitsPerChar = setDef.bits;
-
-    // Convert invisible chars back to bits
+  function trySet(hidden, def) {
+    const {chars, bits:bpc} = def;
     let bits = '';
     for(const c of hidden) {
       const idx = chars.indexOf(c);
-      if(idx < 0) continue; // skip unknown chars
-      bits += idx.toString(2).padStart(bitsPerChar,'0');
+      if(idx<0) continue;
+      bits += idx.toString(2).padStart(bpc,'0');
     }
-
-    // Convert bits to bytes
     const bytes = [];
-    for(let i=0; i+8<=bits.length; i+=8) {
-      bytes.push(parseInt(bits.slice(i,i+8), 2));
-    }
+    for(let i=0;i+8<=bits.length;i+=8) bytes.push(parseInt(bits.slice(i,i+8),2));
     if(!bytes.length) return null;
-
-    // Apply password XOR if provided
-    let decBytes = bytes;
-    if(password) {
-      const keyBytes = deriveKey(password);
-      decBytes = Array.from(applyKey(new Uint8Array(bytes), keyBytes));
-    }
-
-    // Decode bytes to string
-    let text = _td(new Uint8Array(decBytes));
-
-    // Base64 decode if needed
-    if(b64) {
-      try { text = _b64d(text); } catch(e) { /* not b64, return raw */ }
-    }
-
-    return text || null;
+    let dec = Array.from(bytes);
+    if(password) dec = Array.from(applyKey(new Uint8Array(dec), deriveKey(password)));
+    let text = _td(new Uint8Array(dec));
+    if(b64) { try{text=_b64d(text);}catch(e){} }
+    return text||null;
   }
 
   const hidden = extractHidden(encoded);
   if(!hidden) return null;
-
-  // Try specified set first
-  const specSet = SETS[setId] || SETS[DEFAULT_SET];
-  const result = tryDecode(hidden, specSet);
-  if(result) return result;
-
-  // Auto-detect: try all sets
+  const r = trySet(hidden, SETS[setId]||SETS[DEFAULT_SET]);
+  if(r) return r;
   if(autoDetect) {
-    for(const [sid, setDef] of Object.entries(SETS)) {
-      if(sid === setId) continue;
-      const r = tryDecode(hidden, setDef);
-      if(r && r.length > 0 && /[\x20-\x7E\u00A0-\uFFFF]/.test(r)) return r;
+    for(const [sid,def] of Object.entries(SETS)) {
+      if(sid===setId) continue;
+      const r2 = trySet(hidden, def);
+      if(r2 && /[\x20-\x7E\u00A0-\uFFFF]/.test(r2)) return r2;
     }
   }
-
   return null;
 }
 
-// ─── Inspect: reveal what's hidden in a string ────────────
 function inspect(text) {
-  const invisible = [];
+  const inv = [];
   [...text].forEach((c,i) => {
     const cp = c.codePointAt(0);
     let name = null;
-    if(cp===0x200B) name='ZWS (U+200B)';
-    else if(cp===0x200C) name='ZWNJ (U+200C)';
-    else if(cp===0x200D) name='ZWJ (U+200D)';
-    else if(cp===0x2060) name='WJ (U+2060)';
-    else if(cp===0xFEFF) name='BOM/WJ (U+FEFF)';
-    else if(cp===0x200E) name='LRM (U+200E)';
-    else if(cp===0x200F) name='RLM (U+200F)';
-    else if(cp===0x202C) name='PDF (U+202C)';
-    else if(cp===0x034F) name='CGJ (U+034F)';
-    else if(cp===0x00AD) name='SHY (U+00AD)';
-    else if(cp===0x17B4) name='Khmer Invis (U+17B4)';
-    else if(cp===0x17B5) name='Khmer Invis2 (U+17B5)';
-    else if(cp===0x2061) name='Invis Func App (U+2061)';
-    else if(cp===0x2062) name='Invis Times (U+2062)';
-    else if(cp===0x2063) name='Invis Separator (U+2063)';
-    else if(cp===0x2064) name='Invis Plus (U+2064)';
-    else if(cp>=0xE0000 && cp<=0xE007F) name=`Tag U+${cp.toString(16).toUpperCase()}`;
-    if(name) invisible.push({pos:i, cp, name});
+    if(cp===0x200B) name='ZWS';
+    else if(cp===0x200C) name='ZWNJ';
+    else if(cp===0x200D) name='ZWJ';
+    else if(cp===0x2060) name='WJ';
+    else if(cp===0xFEFF) name='BOM/WJ';
+    else if(cp===0x200E) name='LRM';
+    else if(cp===0x200F) name='RLM';
+    else if(cp===0x202C) name='PDF';
+    else if(cp===0x034F) name='CGJ';
+    else if(cp===0x00AD) name='SHY';
+    else if(cp===0x17B4) name='Khmer-Invis1';
+    else if(cp===0x17B5) name='Khmer-Invis2';
+    else if(cp===0x2061) name='InvisFuncApp';
+    else if(cp===0x2062) name='InvisTimes';
+    else if(cp===0x2063) name='InvisSep';
+    else if(cp===0x2064) name='InvisPlus';
+    else if(cp>=0xE0000&&cp<=0xE007F) name=`Tag-${cp.toString(16).toUpperCase()}`;
+    if(name) inv.push({pos:i, cp, name});
   });
-  return invisible;
+  return inv;
 }
 
-// ─── Count invisible chars in a string ────────────────────
-function countInvisible(text) {
-  return inspect(text).length;
-}
+function countInvisible(text) { return inspect(text).length; }
 
-// ─── Strip all invisible/zero-width chars ─────────────────
 function strip(text) {
-  return text.replace(/[\u200B-\u200F\u2060-\u2064\uFEFF\u034F\u00AD\u17B4\u17B5]|[\u{E0000}-\u{E007F}]/gu, '');
+  return text.replace(/[\u200B-\u200F\u2060-\u2064\uFEFF\u034F\u00AD\u17B4\u17B5]|[\u{E0000}-\u{E007F}]/gu,'');
 }
 
-// ─── Demo: show what encoded output looks like ────────────
-function demo(plaintext, password='') {
-  const results = [];
-  for(const [sid, setDef] of Object.entries(SETS)) {
-    try {
-      const enc = encode(plaintext, {setId:sid, password});
-      const len = countInvisible(enc);
-      const dec = decode(enc, {setId:sid, password});
-      results.push({
-        set: sid, name: setDef.name,
-        encoded: enc, invisibleCount: len,
-        decoded: dec, ok: dec===plaintext,
-      });
-    } catch(e) {
-      results.push({set:sid, name:setDef.name, error:e.message});
-    }
-  }
-  return results;
+// ─── Global helpers (exposed to onclick) ─────────────────
+window.xsOpenBlob = function(content, filename, mime='text/plain') {
+  const blob = new Blob([content],{type:mime});
+  const url  = URL.createObjectURL(blob);
+  const win  = window.open(url,'_blank','width=960,height=720,scrollbars=yes,resizable=yes');
+  if(!win) { xsDownload(content, filename, mime); return; }
+  setTimeout(()=>URL.revokeObjectURL(url), 120000);
+};
+window.xsDownload = function(content, filename, mime='text/plain') {
+  const blob = new Blob([content],{type:mime});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+};
+
+// ─── Large-output action bar (no inline display) ─────────
+function largeBar(content, label, filename) {
+  const size = _te(content).length;
+  const cid  = window._cpPut(content);
+  let h = `<div class="xs-large-bar">`;
+  h += `<div class="xs-large-info"><span class="xs-large-label">${esc(label)}</span>`;
+  h += `<span class="xs-large-size">&#128196; ${fmt(size)} — too large to display inline</span></div>`;
+  h += `<div class="xs-large-btns">`;
+  h += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
+  h += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(filename)}')">&#128269; Open in window</button>`;
+  h += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(filename)}')">&#8681; Download</button>`;
+  h += `</div></div>`;
+  return h;
 }
 
-// ─── Main command handler ─────────────────────────────────
-function handle(args) {
-  if(!args.length || args[0]==='--help' || args[0]==='-h') {
-    showHelp(); return;
-  }
-
-  const sub = args[0];
-  const rest = args.slice(1);
-
-  // Parse flags: --password=xxx / -p=xxx / password=xxx
-  const opts = {};
-  const positional = [];
-  for(const a of rest) {
-    const pw   = a.match(/^(?:--password|-p|pw|password)=(.+)$/i);
-    const set  = a.match(/^(?:--set|-s|set)=(.+)$/i);
-    const cov  = a.match(/^(?:--cover|cover)=(.+)$/i);
-    const raw  = a.match(/^(?:--raw|raw)$/i);
-    if(pw)   opts.password  = pw[1].replace(/^['"`]|['"`]$/g,'');
-    else if(set)  opts.setId = set[1];
-    else if(cov)  opts.cover = cov[1];
-    else if(raw)  opts.b64   = false;
-    else positional.push(a);
-  }
-
-  // Merge positional: last arg is text if unambiguous
-  const text = positional.join(' ').replace(/^['"`]|['"`]$/g,'');
-
-  switch(sub) {
-    case 'enc': case 'hide': return cmdEnc(text, opts);
-    case 'dec': case 'reveal': return cmdDec(text, opts);
-    case 'inspect': case 'scan': return cmdInspect(text||'');
-    case 'strip': return cmdStrip(text||'');
-    case 'demo': return cmdDemo(text||'HACKSHELL secret', opts.password||'');
-    case 'sets': return cmdSets();
-    default:
-      // Shorthand: xs "text" --password=xxx  → encode
-      if(text || positional.length) { cmdEnc(sub + (positional.length?' '+positional.join(' '):''), opts); return; }
-      appendBlock(`<span class="tag tag-err">ERROR</span> xs: unknown subcommand <span class="sh-command">${esc(sub)}</span><br><span style="color:var(--gray);font-size:11px">Try <span class="sh-builtin">xs --help</span></span>`,'error');
-  }
+// ─── File picker helper ───────────────────────────────────
+function pickFile(accept='*/*') {
+  return new Promise((res,rej) => {
+    const fi = document.createElement('input');
+    fi.type='file'; fi.accept=accept; fi.style.display='none';
+    document.body.appendChild(fi);
+    fi.onchange = () => { document.body.removeChild(fi); fi.files[0]?res(fi.files[0]):rej(new Error('No file')); };
+    fi.click();
+  });
 }
 
-function showHelp() {
-  appendBlock(`<div class="xs-card"><div class="xs-header"><span class="tag tag-xs">xs</span> Zero-Width Steganographic Encoder</div>
-<div class="xs-desc">Hides text inside invisible Unicode characters — output looks empty, blank, or like normal text.</div>
-<table class="help-table" style="margin-top:10px">
-<tr><td><span class="sh-command">xs enc</span> "text" [options]</td><td>Encode / hide text in invisible chars</td></tr>
-<tr><td><span class="sh-command">xs dec</span> "&lt;paste&gt;" [options]</td><td>Decode / reveal hidden text</td></tr>
-<tr><td><span class="sh-command">xs inspect</span> "&lt;text&gt;"</td><td>Reveal all invisible chars in a string</td></tr>
-<tr><td><span class="sh-command">xs strip</span> "&lt;text&gt;"</td><td>Remove all invisible chars from text</td></tr>
-<tr><td><span class="sh-command">xs demo</span> ["text"]</td><td>Demo all encoding sets side-by-side</td></tr>
-<tr><td><span class="sh-command">xs sets</span></td><td>List all zero-width character sets</td></tr>
-</table>
-<div style="margin-top:10px;color:var(--gray-mid);font-size:10px;letter-spacing:2px">OPTIONS</div>
-<table class="help-table" style="margin-top:4px">
-<tr><td><span class="sh-flag">--password=</span><span class="sh-string">secret</span></td><td>Password-protect the hidden payload (XOR key)</td></tr>
-<tr><td><span class="sh-flag">--set=</span><span class="sh-string">zw4</span></td><td>Character set: zw2, zw4, vs8, tag, combo</td></tr>
-<tr><td><span class="sh-flag">--cover=</span><span class="sh-string">"normal text"</span></td><td>Embed hidden data inside visible cover text</td></tr>
-<tr><td><span class="sh-flag">--raw</span></td><td>Skip base64 (faster, less portable)</td></tr>
-</table>
-<div style="margin-top:10px;color:var(--gray);font-size:11px;line-height:1.9">
-<span class="sh-comment"># Basic encode / decode</span><br>
-<span class="sh-builtin">xs enc "my secret message"</span><br>
-<span class="sh-builtin">xs dec "&lt;paste output&gt;"</span><br>
-<span class="sh-comment"># With password</span><br>
-<span class="sh-builtin">xs enc "top secret" --password=ghost</span><br>
-<span class="sh-builtin">xs dec "&lt;output&gt;" --password=ghost</span><br>
-<span class="sh-comment"># Embed inside cover text (looks totally normal)</span><br>
-<span class="sh-builtin">xs enc "secret" --cover="Hello, how are you today?"</span><br>
-<span class="sh-comment"># Inspect a suspicious string</span><br>
-<span class="sh-builtin">xs inspect "&lt;paste text&gt;"</span>
-</div></div>`, 'info');
+// Read file: text or binary (→base64 data URL)
+function readFile(file) {
+  return new Promise((res,rej) => {
+    const reader = new FileReader();
+    reader.onerror = () => rej(new Error('Read failed'));
+    reader.onload  = e => res(e.target.result);
+    // Always read as ArrayBuffer, then convert — handles all filetypes uniformly
+    reader.readAsArrayBuffer(file);
+  }).then(buf => {
+    // Convert ArrayBuffer to binary string, then base64
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin); // raw base64, no data-URL prefix
+  });
 }
 
+// ─── Import encoded file for decode ──────────────────────
+window.xsImportAndDec = function(optsJson) {
+  const opts = JSON.parse(optsJson);
+  appendBlock(`<span class="tag tag-xs">xs</span> Pick a file containing encoded data…`,'info');
+  pickFile('*/*').then(file => {
+    appendBlock(`<span class="tag tag-xs">xs FILE</span> Reading <span class="sh-string">${esc(file.name)}</span>…`,'info');
+    // Read as text to preserve invisible chars
+    return new Promise((res,rej) => {
+      const r = new FileReader();
+      r.onerror = ()=>rej(new Error('Read failed'));
+      r.onload  = e => res(e.target.result);
+      r.readAsText(file);
+    });
+  }).then(content => {
+    XS.cmdDecDirect(content, opts);
+  }).catch(e => {
+    if(e.message!=='No file')
+      appendBlock(`<span class="tag tag-err">ERROR</span> xs import: ${esc(e.message)}`,'error');
+  });
+};
+
+// ─── ENC command ─────────────────────────────────────────
 function cmdEnc(text, opts) {
   if(!text) return appendBlock(`<span class="tag tag-err">ERROR</span> xs enc: no text to hide<br><span style="color:var(--gray);font-size:11px">Usage: <span class="sh-builtin">xs enc "your secret"</span></span>`,'error');
 
-  const setId    = opts.setId || DEFAULT_SET;
+  const setId    = opts.setId    || DEFAULT_SET;
   const password = opts.password || '';
-  const cover    = opts.cover   || '';
+  const cover    = opts.cover    || '';
   const b64      = opts.b64 !== false;
 
   let encoded;
-  try {
-    encoded = encode(text, {setId, password, cover, b64});
-  } catch(e) {
-    return appendBlock(`<span class="tag tag-err">ERROR</span> xs encode: ${esc(e.message)}`,'error');
-  }
+  try { encoded = encode(text, {setId, password, cover, b64}); }
+  catch(e) { return appendBlock(`<span class="tag tag-err">ERROR</span> xs encode: ${esc(e.message)}`,'error'); }
 
-  const setDef     = SETS[setId] || SETS[DEFAULT_SET];
-  const invCount   = countInvisible(encoded);
-  const visCount   = [...encoded].filter(c=>c.codePointAt(0)>0x20&&!'\u200B\u200C\u200D\u2060\uFEFF\u200E\u200F\u202C\u034F\u00AD\u17B4\u17B5'.includes(c)).length;
-  const hasPass    = !!password;
-  const hasCover   = !!cover;
+  const def      = SETS[setId]||SETS[DEFAULT_SET];
+  const invCount = countInvisible(encoded);
+  const visCount = [...encoded].filter(c=>c.codePointAt(0)>0x20).length - invCount;
+  const inBytes  = _te(text).length;
+  const outBytes = _te(encoded).length;
+  const outLarge = outBytes > MB;
 
   let html = `<div class="xs-card">`;
-  html += `<div class="xs-header"><span class="tag tag-xs">xs ENC</span> <span class="sh-string">"${esc(text.length>40?text.slice(0,40)+'…':text)}"</span></div>`;
+  html += `<div class="xs-header"><span class="tag tag-xs">xs ENC</span> <span class="sh-string">"${esc(text.length>50?text.slice(0,50)+'…':text)}"</span></div>`;
   html += `<div class="xs-meta-row">`;
-  html += `<span class="xs-badge">${esc(setDef.name)}</span>`;
-  if(hasPass) html += `<span class="xs-badge xs-badge-pw">&#128274; password protected</span>`;
-  if(hasCover) html += `<span class="xs-badge xs-badge-cover">&#128065; cover text</span>`;
+  html += `<span class="xs-badge">${esc(def.name)}</span>`;
+  if(password) html += `<span class="xs-badge xs-badge-pw">&#128274; password</span>`;
+  if(cover)    html += `<span class="xs-badge xs-badge-cover">&#128065; cover text</span>`;
   html += `</div>`;
-
-  // Output display — show the cover or the raw invisible block
-  html += `<div class="xs-output-label">OUTPUT <span class="xs-hint">(copy and paste — invisible chars are preserved)</span></div>`;
-  html += `<div class="xs-output-box" id="xs-out-${Date.now()}">${esc(encoded)}</div>`;
-
-  // Stats
   html += `<div class="xs-stats">`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${invCount}</span> invisible chars</span>`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${visCount}</span> visible chars</span>`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${[...text].length}</span> chars hidden</span>`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${(invCount/8).toFixed(1)}</span> bits/char avg</span>`;
+  html += `<span class="xs-stat"><span class="xs-stat-n">${invCount.toLocaleString()}</span> invisible chars</span>`;
+  html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(inBytes)}</span> input</span>`;
+  html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(outBytes)}</span> output</span>`;
   html += `</div>`;
 
-  // Visualize: show a "looks like" preview
-  if(!hasCover) {
-    html += `<div class="xs-preview-label">APPEARANCE TO OTHERS</div>`;
-    html += `<div class="xs-preview-empty">[empty / blank]</div>`;
+  if(outLarge) {
+    html += largeBar(encoded, 'Encoded output', 'xs_encoded.txt');
   } else {
-    html += `<div class="xs-preview-label">APPEARANCE TO OTHERS</div>`;
-    html += `<div class="xs-preview-cover">${esc(strip(encoded))}</div>`;
+    if(!cover) {
+      html += `<div class="xs-preview-label">APPEARANCE TO OTHERS</div>`;
+      html += `<div class="xs-preview-empty">[empty / blank]</div>`;
+    } else {
+      html += `<div class="xs-preview-label">APPEARANCE TO OTHERS</div>`;
+      html += `<div class="xs-preview-cover">${esc(strip(encoded))}</div>`;
+    }
+    html += `<div class="xs-output-label">OUTPUT <span class="xs-hint">(copy and paste — invisible chars are preserved)</span></div>`;
+    html += `<div class="xs-output-box">${esc(encoded)}</div>`;
+    const cid = window._cpPut(encoded);
+    const vid = window._cpPut(JSON.stringify({enc:encoded,opts}));
+    html += `<div class="xs-footer">`;
+    html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
+    html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'xs_encoded.txt')">&#8681; Export</button>`;
+    html += `<button class="proxy-btn xs-btn-reveal" onclick="(function(){const d=JSON.parse(window._cpStore['${vid}']);XS.cmdDecDirect(d.enc,d.opts);})()">&#128065; Verify decode</button>`;
+    html += `</div>`;
   }
-
-  // Buttons
-  html += `<div class="xs-footer">`;
-  html += `<button class="proxy-btn" onclick="navigator.clipboard.writeText(${JSON.stringify(encoded)}).then(()=>appendBlock('<span class="tag tag-xs">COPIED</span> Output copied — paste anywhere.','success'))">&#128203; Copy output</button>`;
-  html += `<button class="proxy-btn xs-btn-reveal" onclick="XS.cmdDecDirect(${JSON.stringify(encoded)},${JSON.stringify(opts)})">&#128065; Verify decode</button>`;
-  html += `</div>`;
-  html += `</div>`;
-  appendBlock(html, 'success');
-}
-
-// Called from verify button
-window.XS_decDirect = function(encoded, opts) {
-  const result = decode(encoded, opts);
-  if(result) appendBlock(`<span class="tag tag-xs">VERIFY</span> ✓ Decoded: <span class="sh-string">"${esc(result)}"</span>`,'success');
-  else appendBlock(`<span class="tag tag-warn">VERIFY</span> Could not decode — wrong password or corrupted.`,'warn');
-};
-
-function cmdDec(text, opts) {
-  if(!text) return appendBlock(`<span class="tag tag-err">ERROR</span> xs dec: no text provided — paste the encoded string`,'error');
-
-  const setId    = opts.setId || DEFAULT_SET;
-  const password = opts.password || '';
-  const b64      = opts.b64 !== false;
-
-  const invCount = countInvisible(text);
-  if(invCount === 0) {
-    return appendBlock(`<span class="tag tag-warn">xs</span> No invisible characters found in input.<br><span style="color:var(--gray);font-size:11px">Make sure you pasted the full encoded output including surrounding invisible chars.</span>`,'warn');
-  }
-
-  let result;
-  try {
-    result = decode(text, {setId, password, b64, autoDetect: true});
-  } catch(e) {
-    return appendBlock(`<span class="tag tag-err">ERROR</span> xs decode: ${esc(e.message)}`,'error');
-  }
-
-  if(result === null || result === undefined || result === '') {
-    let msg = `<span class="tag tag-warn">xs DEC</span> Hidden data found (${invCount} invisible chars) but could not decode.`;
-    if(!password) msg += `<br><span style="color:var(--gray);font-size:11px">💡 Try with a password: <span class="sh-builtin">xs dec "..." --password=yourpassword</span></span>`;
-    else msg += `<br><span style="color:var(--gray);font-size:11px">Wrong password or incompatible encoding set.</span>`;
-    return appendBlock(msg,'warn');
-  }
-
-  const setDef = SETS[setId]||SETS[DEFAULT_SET];
-  let html = `<div class="xs-card">`;
-  html += `<div class="xs-header"><span class="tag tag-xs">xs DEC</span> Hidden message revealed</div>`;
-  html += `<div class="xs-meta-row">`;
-  html += `<span class="xs-badge">${invCount} invisible chars decoded</span>`;
-  if(opts.password) html += `<span class="xs-badge xs-badge-pw">&#128274; password used</span>`;
-  html += `</div>`;
-  html += `<div class="xs-output-label">REVEALED TEXT</div>`;
-  html += `<div class="xs-revealed">${esc(result)}</div>`;
-  html += `<div class="xs-footer">`;
-  html += `<button class="proxy-btn" onclick="navigator.clipboard.writeText(${JSON.stringify(result)}).then(()=>appendBlock('<span class=\\'tag tag-xs\\'>COPIED</span>','success'))">&#128203; Copy revealed text</button>`;
-  html += `<span class="nil-char-count">${[...result].length} chars revealed</span>`;
-  html += `</div>`;
   html += `</div>`;
   appendBlock(html,'success');
 }
 
+// ─── DEC command ─────────────────────────────────────────
+function cmdDec(text, opts) {
+  // No text → offer import
+  if(!text) {
+    const oid = window._cpPut(JSON.stringify(opts));
+    let html = `<div class="xs-card">`;
+    html += `<div class="xs-header"><span class="tag tag-xs">xs DEC</span> Decode hidden payload</div>`;
+    html += `<div style="color:var(--gray-light);font-size:11px;margin-bottom:8px">Paste encoded text inline, or import a file:</div>`;
+    html += `<div class="xs-footer">`;
+    html += `<button class="proxy-btn xs-btn-reveal" onclick="xsImportAndDec(window._cpStore['${oid}'])">&#128194; Import file to decode</button>`;
+    html += `</div></div>`;
+    appendBlock(html,'info');
+    return;
+  }
+
+  const setId    = opts.setId    || DEFAULT_SET;
+  const password = opts.password || '';
+  const b64      = opts.b64 !== false;
+
+  const invCount = countInvisible(text);
+  if(!invCount) return appendBlock(`<span class="tag tag-warn">xs</span> No invisible characters found.<br><span style="color:var(--gray);font-size:11px">Paste the full encoded output including surrounding invisible chars.</span>`,'warn');
+
+  let result;
+  try { result = decode(text, {setId, password, b64, autoDetect:true}); }
+  catch(e) { return appendBlock(`<span class="tag tag-err">ERROR</span> xs decode: ${esc(e.message)}`,'error'); }
+
+  if(!result) {
+    let msg = `<span class="tag tag-warn">xs DEC</span> Found ${invCount.toLocaleString()} invisible chars but could not decode.`;
+    if(!password) msg += `<br><span style="color:var(--gray);font-size:11px">💡 Try: <span class="sh-builtin">xs dec "..." --password=yourpassword</span></span>`;
+    else msg += `<br><span style="color:var(--gray);font-size:11px">Wrong password or incompatible set.</span>`;
+    return appendBlock(msg,'warn');
+  }
+
+  const outBytes = _te(result).length;
+  const outLarge = outBytes > MB;
+
+  let html = `<div class="xs-card">`;
+  html += `<div class="xs-header"><span class="tag tag-xs">xs DEC</span> Hidden message revealed</div>`;
+  html += `<div class="xs-meta-row">`;
+  html += `<span class="xs-badge">${invCount.toLocaleString()} invisible chars decoded</span>`;
+  if(password) html += `<span class="xs-badge xs-badge-pw">&#128274; password used</span>`;
+  html += `</div>`;
+
+  if(outLarge) {
+    html += largeBar(result, 'Revealed payload', 'xs_revealed.txt');
+  } else {
+    html += `<div class="xs-output-label">REVEALED TEXT</div>`;
+    html += `<div class="xs-revealed">${esc(result)}</div>`;
+    const cid = window._cpPut(result);
+    html += `<div class="xs-footer">`;
+    html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
+    html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'xs_revealed.txt')">&#8681; Export</button>`;
+    html += `<span class="nil-char-count">${[...result].length} chars</span>`;
+    html += `</div>`;
+  }
+  html += `</div>`;
+  appendBlock(html,'success');
+}
+
+// ─── FILE command ─────────────────────────────────────────
+function cmdFile(args) {
+  const mode = args[0]==='dec' ? 'dec' : 'enc';
+  const rest = (args[0]==='enc'||args[0]==='dec') ? args.slice(1) : args;
+  const fileOpts = {};
+  for(const a of rest) {
+    const pw  = a.match(/^(?:--password|-p|pw|password)=(.+)$/i);
+    const set = a.match(/^(?:--set|-s|set)=(.+)$/i);
+    if(pw)  fileOpts.password = pw[1].replace(/^['"`]|['"`]$/g,'');
+    if(set) fileOpts.setId    = set[1];
+  }
+
+  appendBlock(`<span class="tag tag-xs">xs FILE ${mode.toUpperCase()}</span> Pick any file — zip, binary, text, anything…`,'info');
+
+  pickFile('*/*').then(file => {
+    appendBlock(`<span class="tag tag-xs">xs FILE</span> Reading <span class="sh-string">${esc(file.name)}</span> <span class="sh-comment">(${fmt(file.size)})</span>…`,'info');
+
+    if(mode === 'enc') {
+      // Read as ArrayBuffer → base64 — works for ALL file types including zip/binary
+      return readFile(file).then(b64payload => {
+        let encoded;
+        try {
+          encoded = encode(b64payload, {
+            setId:    fileOpts.setId    || DEFAULT_SET,
+            password: fileOpts.password || '',
+            b64:      false, // payload is already base64
+          });
+        } catch(e) {
+          appendBlock(`<span class="tag tag-err">ERROR</span> xs file enc: ${esc(e.message)}`,'error');
+          return;
+        }
+
+        const inBytes  = _te(b64payload).length;
+        const outBytes = _te(encoded).length;
+        const outLarge = outBytes > MB;
+        const defName  = SETS[fileOpts.setId||DEFAULT_SET]?.name || DEFAULT_SET;
+
+        let html = `<div class="xs-card">`;
+        html += `<div class="xs-header"><span class="tag tag-xs">xs FILE ENC</span> <span class="sh-string">${esc(file.name)}</span></div>`;
+        html += `<div class="xs-meta-row">`;
+        html += `<span class="xs-badge">${esc(defName)}</span>`;
+        html += `<span class="xs-badge">${file.type||'binary'}</span>`;
+        if(fileOpts.password) html += `<span class="xs-badge xs-badge-pw">&#128274; password</span>`;
+        html += `</div>`;
+        html += `<div class="xs-stats">`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(file.size)}</span> original</span>`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(inBytes)}</span> b64 payload</span>`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(outBytes)}</span> encoded</span>`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${countInvisible(encoded).toLocaleString()}</span> invisible chars</span>`;
+        html += `</div>`;
+
+        if(outLarge) {
+          html += largeBar(encoded, `Encoded: ${file.name}`, file.name+'.xsenc.txt');
+        } else {
+          const cid = window._cpPut(encoded);
+          html += `<div class="xs-output-label">ENCODED OUTPUT <span class="xs-hint">(paste anywhere)</span></div>`;
+          html += `<div class="xs-output-box">${esc(encoded)}</div>`;
+          html += `<div class="xs-footer">`;
+          html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
+          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(file.name)}.xsenc.txt')">&#8681; Export .txt</button>`;
+          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(file.name)}.xsenc.txt')">&#128269; Open in window</button>`;
+          html += `</div>`;
+        }
+        html += `</div>`;
+        appendBlock(html,'success');
+      });
+
+    } else {
+      // DECODE — read as text to preserve invisible chars
+      return new Promise((res,rej) => {
+        const r = new FileReader();
+        r.onerror = ()=>rej(new Error('Read failed'));
+        r.onload  = e => res(e.target.result);
+        r.readAsText(file);
+      }).then(content => {
+        const invCount = countInvisible(content);
+        if(!invCount) {
+          appendBlock(`<span class="tag tag-warn">xs FILE DEC</span> No invisible characters in <span class="sh-string">${esc(file.name)}</span>.`,'warn');
+          return;
+        }
+
+        let result;
+        try {
+          result = decode(content, {
+            setId:      fileOpts.setId    || DEFAULT_SET,
+            password:   fileOpts.password || '',
+            b64:        false, // raw b64 payload — we'll decode below
+            autoDetect: true,
+          });
+        } catch(e) {
+          appendBlock(`<span class="tag tag-err">ERROR</span> xs file dec: ${esc(e.message)}`,'error');
+          return;
+        }
+
+        if(!result) {
+          appendBlock(`<span class="tag tag-warn">xs FILE DEC</span> Could not decode ${invCount.toLocaleString()} invisible chars from <span class="sh-string">${esc(file.name)}</span>${fileOpts.password?'':" — try --password=..."}.`,'warn');
+          return;
+        }
+
+        // result is base64 of original file — reconstruct it
+        let reconstructedBlob, reconstructedUrl;
+        try {
+          const bin = atob(result);
+          const bytes = new Uint8Array(bin.length);
+          for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+          reconstructedBlob = new Blob([bytes], {type: file.type||'application/octet-stream'});
+          reconstructedUrl  = URL.createObjectURL(reconstructedBlob);
+        } catch(e) {
+          // Not a binary file — treat result as plain text
+          reconstructedBlob = null;
+        }
+
+        const outLarge = result.length > MB;
+        let html = `<div class="xs-card">`;
+        html += `<div class="xs-header"><span class="tag tag-xs">xs FILE DEC</span> <span class="sh-string">${esc(file.name)}</span></div>`;
+        html += `<div class="xs-meta-row">`;
+        html += `<span class="xs-badge">${invCount.toLocaleString()} invisible chars found</span>`;
+        if(fileOpts.password) html += `<span class="xs-badge xs-badge-pw">&#128274; password used</span>`;
+        html += `</div>`;
+        html += `<div class="xs-stats">`;
+        html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(file.size)}</span> file read</span>`;
+        if(reconstructedBlob) html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(reconstructedBlob.size)}</span> recovered</span>`;
+        html += `</div>`;
+
+        if(reconstructedBlob) {
+          // Binary file recovery — offer download
+          const origName = file.name.replace(/\.xsenc\.txt$/,'');
+          html += `<div class="xs-output-label">RECOVERED FILE</div>`;
+          html += `<div class="xs-large-bar">`;
+          html += `<div class="xs-large-info"><span class="xs-large-label">${esc(origName)}</span>`;
+          html += `<span class="xs-large-size">&#128196; ${fmt(reconstructedBlob.size)} — binary file recovered</span></div>`;
+          html += `<div class="xs-large-btns">`;
+          html += `<a href="${reconstructedUrl}" download="${esc(origName)}" style="text-decoration:none"><button class="proxy-btn">&#8681; Download recovered file</button></a>`;
+          html += `</div></div>`;
+        } else if(outLarge) {
+          html += largeBar(result, `Decoded payload`, file.name+'.decoded.txt');
+        } else {
+          const cid = window._cpPut(result);
+          html += `<div class="xs-output-label">REVEALED PAYLOAD</div>`;
+          html += `<div class="xs-revealed">${esc(result.slice(0,2000)+(result.length>2000?'…':''))}</div>`;
+          html += `<div class="xs-footer">`;
+          html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
+          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(file.name)}.decoded.txt')">&#8681; Export</button>`;
+          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(file.name)}.decoded.txt')">&#128269; Open in window</button>`;
+          html += `<span class="nil-char-count">${[...result].length} chars</span>`;
+          html += `</div>`;
+        }
+        html += `</div>`;
+        appendBlock(html,'success');
+      });
+    }
+  }).catch(e => {
+    if(e.message!=='No file')
+      appendBlock(`<span class="tag tag-err">ERROR</span> xs file: ${esc(e.message)}`,'error');
+  });
+}
+
+// ─── INSPECT command ──────────────────────────────────────
 function cmdInspect(text) {
   if(!text) return appendBlock(`<span class="tag tag-err">ERROR</span> xs inspect: no text`,'error');
-
   const found = inspect(text);
   const total = [...text].length;
-
   let html = `<div class="xs-card">`;
   html += `<div class="xs-header"><span class="tag tag-xs">xs INSPECT</span> Invisible character analysis</div>`;
   html += `<div class="xs-stats">`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${total}</span> total chars</span>`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${found.length}</span> invisible</span>`;
-  html += `<span class="xs-stat"><span class="xs-stat-n">${total-found.length}</span> visible</span>`;
+  html += `<span class="xs-stat"><span class="xs-stat-n">${total.toLocaleString()}</span> total</span>`;
+  html += `<span class="xs-stat"><span class="xs-stat-n">${found.length.toLocaleString()}</span> invisible</span>`;
+  html += `<span class="xs-stat"><span class="xs-stat-n">${(total-found.length).toLocaleString()}</span> visible</span>`;
   html += `</div>`;
-
   if(!found.length) {
     html += `<div class="xs-preview-empty" style="margin-top:8px">No invisible characters detected.</div>`;
   } else {
-    // Group by type
     const types = {};
     found.forEach(({name})=>{ types[name]=(types[name]||0)+1; });
     html += `<div style="margin-top:8px"><table class="help-table">`;
-    html += `<tr><td style="color:var(--gray-mid);font-size:9px">CHAR</td><td style="color:var(--gray-mid);font-size:9px">COUNT</td><td style="color:var(--gray-mid);font-size:9px">ROLE</td></tr>`;
     for(const [name,count] of Object.entries(types)) {
-      const isData = name.includes('ZWS')||name.includes('ZWNJ')||name.includes('ZWJ')||name.includes('WJ')||name.includes('Tag');
-      html += `<tr><td><span class="xs-char-pill ${isData?'xs-char-data':'xs-char-ctrl'}">${esc(name)}</span></td><td><span class="sh-number">${count}</span></td><td style="color:var(--gray-light);font-size:11px">${isData?'steganographic payload':'control/formatting'}</td></tr>`;
+      const isData = !['LRM','RLM','PDF','BOM/WJ'].includes(name);
+      html += `<tr><td><span class="xs-char-pill ${isData?'xs-char-data':'xs-char-ctrl'}">${esc(name)}</span></td><td><span class="sh-number">${count}</span></td><td style="color:var(--gray-light);font-size:11px">${isData?'payload':'control'}</td></tr>`;
     }
     html += `</table></div>`;
-
-    // Show first 20 positions
-    const preview = found.slice(0,20).map(({pos,name})=>`<span class="xs-pos">@${pos}</span><span class="xs-char-pill xs-char-data">${esc(name.split('(')[0].trim())}</span>`).join(' ');
-    html += `<div style="margin-top:8px;font-size:10px;line-height:2">${preview}${found.length>20?` <span style="color:var(--gray)">…+${found.length-20} more</span>`:''}</div>`;
-
-    // Try to decode
+    const preview = found.slice(0,24).map(({pos,name})=>`<span class="xs-pos">@${pos}</span><span class="xs-char-pill xs-char-data">${esc(name)}</span>`).join(' ');
+    html += `<div style="margin-top:8px;font-size:10px;line-height:2">${preview}${found.length>24?` <span style="color:var(--gray)">…+${found.length-24}</span>`:''}</div>`;
     const tryResult = decode(text, {autoDetect:true});
     if(tryResult) {
       html += `<div style="margin-top:8px;padding:6px 10px;background:rgba(0,255,136,0.05);border:1px solid rgba(0,255,136,0.15);border-radius:3px">`;
@@ -2841,68 +2914,134 @@ function cmdInspect(text) {
       html += `</div>`;
     }
   }
-
-  html += `</div>`;
-  appendBlock(html, 'info');
-}
-
-function cmdStrip(text) {
-  if(!text) return appendBlock(`<span class="tag tag-err">ERROR</span> xs strip: no text`,'error');
-  const before = [...text].length;
-  const stripped = strip(text);
-  const after = [...stripped].length;
-  const removed = before - after;
-  let html = `<span class="tag tag-xs">xs STRIP</span> Removed <span class="sh-number">${removed}</span> invisible char${removed!==1?'s':''}.<br>`;
-  html += `<div class="xs-revealed" style="margin-top:5px">${stripped?esc(stripped):'<span style="color:var(--gray)">(empty — text was entirely invisible)</span>'}</div>`;
-  if(removed>0) html += `<div style="margin-top:6px"><button class="proxy-btn" onclick="navigator.clipboard.writeText(${JSON.stringify(stripped)})">&#128203; Copy stripped text</button></div>`;
-  appendBlock(html,'success');
-}
-
-function cmdDemo(text, password) {
-  const results = demo(text, password);
-  let html = `<div class="xs-card">`;
-  html += `<div class="xs-header"><span class="tag tag-xs">xs DEMO</span> All sets — <span class="sh-string">"${esc(text.length>30?text.slice(0,30)+'…':text)}"</span>${password?` <span class="xs-badge xs-badge-pw">&#128274; password</span>`:''}</div>`;
-  html += `<table class="help-table" style="margin-top:8px">`;
-  html += `<tr><td style="color:var(--gray-mid);font-size:9px">SET</td><td style="color:var(--gray-mid);font-size:9px">INVISIBLE CHARS</td><td style="color:var(--gray-mid);font-size:9px">BITS/CHAR</td><td style="color:var(--gray-mid);font-size:9px">ROUNDTRIP</td></tr>`;
-  for(const r of results) {
-    if(r.error){ html+=`<tr><td><span class="sh-command">${esc(r.set)}</span></td><td colspan="3" style="color:var(--red)">${esc(r.error)}</td></tr>`; continue; }
-    const bits = SETS[r.set]?.bits || '?';
-    const ok = r.ok ? `<span class="sh-ok-code">✓ perfect</span>` : `<span class="sh-err-code">✗ mismatch</span>`;
-    html+=`<tr>
-      <td><span class="sh-command">${esc(r.set)}</span><div style="color:var(--gray-mid);font-size:9px">${esc(r.name)}</div></td>
-      <td><span class="sh-number">${r.invisibleCount}</span></td>
-      <td><span class="sh-number">${bits}</span></td>
-      <td>${ok}</td>
-    </tr>`;
-  }
-  html += `</table>`;
-  html += `<div style="margin-top:8px;color:var(--gray);font-size:11px">All sets produce output that appears blank or invisible to the naked eye.</div>`;
   html += `</div>`;
   appendBlock(html,'info');
 }
 
+// ─── STRIP command ───────────────────────────────────────
+function cmdStrip(text) {
+  if(!text) return appendBlock(`<span class="tag tag-err">ERROR</span> xs strip: no text`,'error');
+  const stripped = strip(text);
+  const removed = [...text].length - [...stripped].length;
+  let html = `<span class="tag tag-xs">xs STRIP</span> Removed <span class="sh-number">${removed}</span> invisible char${removed!==1?'s':''}.<br>`;
+  html += `<div class="xs-revealed" style="margin-top:5px">${stripped?esc(stripped):'<span style="color:var(--gray)">(empty — text was entirely invisible)</span>'}</div>`;
+  if(removed>0) {
+    const cid = window._cpPut(stripped);
+    html += `<div style="margin-top:6px"><button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy stripped</button></div>`;
+  }
+  appendBlock(html,'success');
+}
+
+// ─── DEMO command ─────────────────────────────────────────
+function cmdDemo(text, password) {
+  const TEST = text;
+  let html = `<div class="xs-card">`;
+  html += `<div class="xs-header"><span class="tag tag-xs">xs DEMO</span> All sets — <span class="sh-string">"${esc(TEST.length>30?TEST.slice(0,30)+'…':TEST)}"</span>${password?` <span class="xs-badge xs-badge-pw">&#128274; password</span>`:''}</div>`;
+  html += `<table class="help-table" style="margin-top:8px">`;
+  html += `<tr><td style="color:var(--gray-mid);font-size:9px">SET</td><td style="color:var(--gray-mid);font-size:9px">INVISIBLE CHARS</td><td style="color:var(--gray-mid);font-size:9px">BITS/CHAR</td><td style="color:var(--gray-mid);font-size:9px">ROUNDTRIP</td></tr>`;
+  for(const [sid,def] of Object.entries(SETS)) {
+    try {
+      const enc = encode(TEST,{setId:sid,password});
+      const dec = decode(enc,{setId:sid,password});
+      const inv = countInvisible(enc);
+      const ok  = dec===TEST;
+      html += `<tr><td><span class="sh-command">${esc(sid)}</span><div style="color:var(--gray-mid);font-size:9px">${esc(def.name)}</div></td>`;
+      html += `<td><span class="sh-number">${inv}</span></td><td><span class="sh-number">${def.bits}</span></td>`;
+      html += `<td>${ok?`<span class="sh-ok-code">✓ perfect</span>`:`<span class="sh-err-code">✗ mismatch</span>`}</td></tr>`;
+    } catch(e) {
+      html += `<tr><td><span class="sh-command">${esc(sid)}</span></td><td colspan="3" style="color:var(--red)">${esc(e.message)}</td></tr>`;
+    }
+  }
+  html += `</table></div>`;
+  appendBlock(html,'info');
+}
+
+// ─── SETS command ─────────────────────────────────────────
 function cmdSets() {
   let html = `<div class="xs-card">`;
   html += `<div class="xs-header"><span class="tag tag-xs">xs SETS</span> Zero-width character sets</div>`;
   html += `<table class="help-table" style="margin-top:8px">`;
-  html += `<tr><td style="color:var(--gray-mid);font-size:9px">ID</td><td style="color:var(--gray-mid);font-size:9px">BITS/CHAR</td><td style="color:var(--gray-mid);font-size:9px">CHARS USED</td><td style="color:var(--gray-mid);font-size:9px">DESCRIPTION</td></tr>`;
   for(const [id,def] of Object.entries(SETS)) {
-    const codepoints = def.chars.map(c=>`U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}`).join(' ');
-    html += `<tr>
-      <td><span class="sh-command">${esc(id)}</span>${id===DEFAULT_SET?' <span class="xs-badge" style="font-size:8px">default</span>':''}</td>
-      <td><span class="sh-number">${def.bits}</span></td>
-      <td style="color:var(--gray-light);font-size:10px">${esc(codepoints)}</td>
-      <td style="color:var(--gray-light)">${esc(def.name)}</td>
-    </tr>`;
+    const cps = def.chars.map(c=>`U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4,'0')}`).join(' ');
+    html += `<tr><td><span class="sh-command">${esc(id)}</span>${id===DEFAULT_SET?' <span class="xs-badge" style="font-size:8px">default</span>':''}</td>`;
+    html += `<td><span class="sh-number">${def.bits}</span> bits/char</td>`;
+    html += `<td style="color:var(--gray-light);font-size:10px">${esc(cps)}</td>`;
+    html += `<td style="color:var(--gray-light)">${esc(def.name)}</td></tr>`;
   }
   html += `</table>`;
-  html += `<div style="margin-top:8px;color:var(--gray);font-size:11px">Higher bits/char = fewer invisible chars in output = harder to detect statistically.</div>`;
+  html += `<div style="margin-top:8px;color:var(--gray);font-size:11px">Higher bits/char = fewer invisible chars = harder to detect statistically.</div>`;
   html += `</div>`;
   appendBlock(html,'info');
 }
 
+// ─── HELP ─────────────────────────────────────────────────
+function showHelp() {
+  appendBlock(`<div class="xs-card"><div class="xs-header"><span class="tag tag-xs">xs</span> Zero-Width Steganographic Encoder</div>
+<div class="xs-desc">Hides text or ANY file in invisible Unicode — output looks blank, or like normal text with cover.</div>
+<table class="help-table" style="margin-top:10px">
+<tr><td><span class="sh-command">xs enc</span> "text" [opts]</td><td>Hide text in invisible chars</td></tr>
+<tr><td><span class="sh-command">xs dec</span> "&lt;paste&gt;" [opts]</td><td>Reveal hidden text</td></tr>
+<tr><td><span class="sh-command">xs file enc</span> [opts]</td><td>Pick &amp; encode any file (zip, binary, image…)</td></tr>
+<tr><td><span class="sh-command">xs file dec</span> [opts]</td><td>Pick encoded .txt → recover original file</td></tr>
+<tr><td><span class="sh-command">xs inspect</span> "&lt;text&gt;"</td><td>Reveal all invisible chars in a string</td></tr>
+<tr><td><span class="sh-command">xs strip</span> "&lt;text&gt;"</td><td>Remove all invisible chars</td></tr>
+<tr><td><span class="sh-command">xs demo</span> ["text"]</td><td>Compare all encoding sets</td></tr>
+<tr><td><span class="sh-command">xs sets</span></td><td>List character sets</td></tr>
+</table>
+<div style="margin-top:10px;color:var(--gray-mid);font-size:10px;letter-spacing:2px">OPTIONS</div>
+<table class="help-table" style="margin-top:4px">
+<tr><td><span class="sh-flag">--password=</span><span class="sh-string">secret</span></td><td>XOR password-protect the payload</td></tr>
+<tr><td><span class="sh-flag">--set=</span><span class="sh-string">zw4</span></td><td>Char set: zw2 zw4 vs8 tag combo</td></tr>
+<tr><td><span class="sh-flag">--cover=</span><span class="sh-string">"normal text"</span></td><td>Embed inside visible cover text</td></tr>
+</table>
+<div style="margin-top:10px;color:var(--gray);font-size:11px;line-height:1.9">
+<span class="sh-comment"># Text encode/decode</span><br>
+<span class="sh-builtin">xs enc "my secret" --password=ghost</span><br>
+<span class="sh-builtin">xs dec "&lt;paste&gt;" --password=ghost</span><br>
+<span class="sh-comment"># Hide inside cover text</span><br>
+<span class="sh-builtin">xs enc "secret" --cover="Hey, how are you?"</span><br>
+<span class="sh-comment"># File encode/decode (any filetype, zip, binary)</span><br>
+<span class="sh-builtin">xs file enc --password=ghost</span><br>
+<span class="sh-builtin">xs file dec --password=ghost</span>
+</div></div>`,'info');
+}
+
+// ─── HANDLE dispatcher ────────────────────────────────────
+function handle(args) {
+  if(!args.length||args[0]==='--help'||args[0]==='-h') { showHelp(); return; }
+  const sub  = args[0];
+  const rest = args.slice(1);
+  const opts = {};
+  const pos  = [];
+  for(const a of rest) {
+    const pw  = a.match(/^(?:--password|-p|pw|password)=(.+)$/i);
+    const set = a.match(/^(?:--set|-s|set)=(.+)$/i);
+    const cov = a.match(/^(?:--cover|cover)=(.+)$/i);
+    const raw = a.match(/^(?:--raw|raw)$/i);
+    if(pw)       opts.password = pw[1].replace(/^['"`]|['"`]$/g,'');
+    else if(set) opts.setId    = set[1];
+    else if(cov) opts.cover    = cov[1];
+    else if(raw) opts.b64      = false;
+    else         pos.push(a);
+  }
+  const text = pos.join(' ').replace(/^['"`]|['"`]$/g,'');
+  switch(sub) {
+    case 'enc':  case 'hide':   return cmdEnc(text, opts);
+    case 'dec':  case 'reveal': return cmdDec(text, opts);
+    case 'file':                return cmdFile(rest);
+    case 'inspect': case 'scan':return cmdInspect(text||'');
+    case 'strip':               return cmdStrip(text||'');
+    case 'demo':                return cmdDemo(text||'HACKSHELL secret', opts.password||'');
+    case 'sets':                return cmdSets();
+    default:
+      if(text||pos.length) { cmdEnc(sub+(pos.length?' '+pos.join(' '):''), opts); return; }
+      appendBlock(`<span class="tag tag-err">ERROR</span> xs: unknown subcommand <span class="sh-command">${esc(sub)}</span><br><span style="color:var(--gray);font-size:11px">Try <span class="sh-builtin">xs --help</span></span>`,'error');
+  }
+}
+
 return { handle, encode, decode, inspect, strip, cmdDecDirect: (e,o)=>cmdDec(e,o) };
 })();
+
 
 // ══════════════════════════════════════════════════════════
 //  BOOT ANIMATION
@@ -3031,5 +3170,4 @@ window.addEventListener('hashchange', () => {
 });
 
 // ── Start ──
-bootSequence(); 
-
+bootSequence();
