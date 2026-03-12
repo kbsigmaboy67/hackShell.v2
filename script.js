@@ -2877,30 +2877,44 @@ async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileN
   xsUpdateProgress(progressId, 15, `${willCompress ? 'compressed' : 'raw'} ${fmt(totalOrig)} → ${fmt(compressed.length)} (${(ratio*100).toFixed(0)}%)`);
   await xsYield();
 
-  // Step 2: base64 encode compressed bytes
+  // ── Step 2: chunked base64 encode — no btoa() on huge strings ─────────────
   xsSetProgressLabel(progressId, `${fileName} — base64`);
-  xsUpdateProgress(progressId, 18, 'converting to base64…');
+  xsUpdateProgress(progressId, 18, 'base64 encode…');
   await xsYield();
 
-  // Build binary string in safe chunks then single btoa() — chunked btoa breaks padding
-  const BCHUNK = 8192;
-  const binParts = [];
-  for(let i=0;i<compressed.length;i+=BCHUNK) {
-    const end = Math.min(i+BCHUNK, compressed.length);
-    const slice = [];
-    for(let j=i;j<end;j++) slice.push(compressed[j]);
-    binParts.push(String.fromCharCode.apply(null, slice));
-    if(i % (BCHUNK*16) === 0 && i > 0) {
-      xsUpdateProgress(progressId, 18 + Math.round(i/compressed.length*7), 'base64…');
-      await xsYield();
+  {
+    const B64C = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const clen = compressed.length;
+    const b64outLen = Math.ceil(clen/3)*4;
+    // Store as Uint8Array of ASCII codes — avoids huge string allocation
+    const b64buf = new Uint8Array(b64outLen);
+    let bi = 0;
+    const ENC_CHUNK = 12288; // must be multiple of 3
+    let lastYieldE = performance.now();
+    for(let i=0;i<clen;i+=3) {
+      const a=compressed[i], b=i+1<clen?compressed[i+1]:0, c=i+2<clen?compressed[i+2]:0;
+      b64buf[bi++] = B64C.charCodeAt((a>>2)&0x3F);
+      b64buf[bi++] = B64C.charCodeAt(((a&3)<<4)|(b>>4));
+      b64buf[bi++] = B64C.charCodeAt(((b&0xF)<<2)|(c>>6));
+      b64buf[bi++] = B64C.charCodeAt(c&0x3F);
+      const now = performance.now();
+      if(i>0 && i%ENC_CHUNK===0 && now-lastYieldE>=250) {
+        xsUpdateProgress(progressId, 18+Math.round(i/clen*7), `${fmt(i)} / ${fmt(clen)}`);
+        await xsYield();
+        lastYieldE = performance.now();
+      }
     }
+    // Padding
+    const pad=(3-(clen%3))%3;
+    for(let p=0;p<pad;p++) b64buf[b64outLen-1-p]=61; // '='
+    // Keep as Uint8Array — next step (TextEncoder/password) works on this directly
+    var b64payload = b64buf; // Uint8Array of ASCII
   }
-  const b64payload = btoa(binParts.join(''));
-  xsUpdateProgress(progressId, 25, `${fmt(b64payload.length)} b64 payload`);
+  xsUpdateProgress(progressId, 25, `${fmt(b64payload.length)} b64 bytes`);
   await xsYield();
 
-  // Step 3: apply password to raw bytes of b64 string
-  let payloadBytes = new TextEncoder().encode(b64payload);
+  // Step 3: apply password to raw bytes of b64
+  let payloadBytes = b64payload instanceof Uint8Array ? b64payload : new TextEncoder().encode(b64payload);
   if(password) {
     xsSetProgressLabel(progressId, `${fileName} — encrypting`);
     xsUpdateProgress(progressId, 28, 'encrypting…');
@@ -3027,41 +3041,74 @@ async function decodeFilePipeline(encodedStr, {setId, password, progressId, file
     payloadBytes = xored;
   }
 
-  // Step 4: base64 decode → compressed bytes
-  xsSetProgressLabel(progressId, `${fileName} — decoding b64`);
+  // ── Step 4: chunked base64 decode → raw bytes (no atob on huge strings) ───
+  // payloadBytes is a Uint8Array of ASCII base64 chars.
+  // We decode 3 bytes at a time from 4 b64 chars, chunked with yields.
+  xsSetProgressLabel(progressId, `${fileName} — b64 decode`);
   xsUpdateProgress(progressId, 65, 'base64 decode…');
   await xsYield();
 
-  let compressedBytes;
-  try {
-    const b64str = new TextDecoder().decode(payloadBytes);
-    const bin = atob(b64str);
-    compressedBytes = new Uint8Array(bin.length);
-    for(let i=0;i<bin.length;i++) compressedBytes[i] = bin.charCodeAt(i);
-  } catch(e) {
-    return null;
-  }
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  // Build reverse lookup table once
+  const b64map = new Uint8Array(256).fill(255);
+  for(let i=0;i<64;i++) b64map[B64.charCodeAt(i)] = i;
 
-  // Step 5: decompress
+  // Strip padding from end — payloadBytes is ASCII
+  let b64len = payloadBytes.length;
+  while(b64len > 0 && payloadBytes[b64len-1] === 61) b64len--; // 61 = '='
+
+  // Output size: floor(b64len * 3/4)
+  const rawLen = (b64len * 3) >> 2;
+  const rawBytes = new Uint8Array(rawLen);
+  let ri = 0;
+  const DEC_CHUNK = 16384; // 4-char groups per tick chunk
+  lastYield = performance.now();
+
+  for(let i=0;i<b64len;i+=4) {
+    const a = b64map[payloadBytes[i]]   ?? 0;
+    const b = b64map[payloadBytes[i+1]] ?? 0;
+    const c = b64map[payloadBytes[i+2]] ?? 0;
+    const d = b64map[payloadBytes[i+3]] ?? 0;
+    if(ri < rawLen)   rawBytes[ri++] = (a<<2)|(b>>4);
+    if(ri < rawLen)   rawBytes[ri++] = ((b&0xF)<<4)|(c>>2);
+    if(ri < rawLen)   rawBytes[ri++] = ((c&0x3)<<6)|d;
+
+    const now = performance.now();
+    if(i % DEC_CHUNK === 0 && now - lastYield >= 250) {
+      const pct = 65 + Math.round(i/b64len * 12);
+      xsUpdateProgress(progressId, pct, `${fmt(ri)} / ${fmt(rawLen)}`);
+      await xsYield();
+      lastYield = performance.now();
+    }
+  }
+  const compressedBytes = rawBytes.subarray(0, ri);
+
+  // ── Step 5: decompress ───────────────────────────────────────────────────
   xsSetProgressLabel(progressId, `${fileName} — decompressing`);
-  xsUpdateProgress(progressId, 80, 'decompressing…');
+  xsUpdateProgress(progressId, 78, 'decompressing…');
   await xsYield();
 
   let fileBytes;
   try {
     fileBytes = await xsDecompress(compressedBytes);
   } catch(e) {
-    fileBytes = compressedBytes; // not compressed, return raw
+    fileBytes = compressedBytes; // was --no-compress, return raw
   }
 
-  // ── Parse embedded header ─────────────────────────────────────────────────
+  // ── Step 6: parse embedded header {n, c}\x00 + file bytes ────────────────
+  xsUpdateProgress(progressId, 95, 'reading header…');
+  await xsYield();
+
   let embeddedName = null;
   let outBytes     = fileBytes;
-  const nullIdx = fileBytes.indexOf(0);
-  if(nullIdx > 0 && nullIdx < 512) {
+  // Search only first 512 bytes for NUL separator
+  const searchLen = Math.min(fileBytes.length, 512);
+  let nullIdx = -1;
+  for(let i=0;i<searchLen;i++) { if(fileBytes[i]===0){nullIdx=i;break;} }
+  if(nullIdx > 0) {
     try {
-      const hdr = JSON.parse(new TextDecoder().decode(fileBytes.slice(0, nullIdx)));
-      if(hdr && hdr.n) { embeddedName = hdr.n; outBytes = fileBytes.slice(nullIdx + 1); }
+      const hdr = JSON.parse(new TextDecoder().decode(fileBytes.subarray(0, nullIdx)));
+      if(hdr && hdr.n) { embeddedName = hdr.n; outBytes = fileBytes.subarray(nullIdx + 1); }
     } catch(e) {}
   }
 
