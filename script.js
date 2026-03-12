@@ -3083,33 +3083,50 @@ async function decodeFilePipeline(encodedStr, {setId, password, progressId, file
   }
   const compressedBytes = rawBytes.subarray(0, ri);
 
-  // ── Step 5: decompress ───────────────────────────────────────────────────
-  xsSetProgressLabel(progressId, `${fileName} — decompressing`);
-  xsUpdateProgress(progressId, 78, 'decompressing…');
-  await xsYield();
-
-  let fileBytes;
-  try {
-    fileBytes = await xsDecompress(compressedBytes);
-  } catch(e) {
-    fileBytes = compressedBytes; // was --no-compress, return raw
-  }
-
-  // ── Step 6: parse embedded header {n, c}\x00 + file bytes ────────────────
-  xsUpdateProgress(progressId, 95, 'reading header…');
+  // ── Step 5: parse header FIRST, then decompress only if c===1 ─────────────
+  // Header is always at the start of compressedBytes (or raw bytes if c=0).
+  // Format: JSON{"n":"name","c":0or1}\x00 + file bytes
+  // We must read c BEFORE deciding whether to decompress.
+  xsSetProgressLabel(progressId, `${fileName} — reading header`);
+  xsUpdateProgress(progressId, 78, 'parsing header…');
   await xsYield();
 
   let embeddedName = null;
-  let outBytes     = fileBytes;
-  // Search only first 512 bytes for NUL separator
-  const searchLen = Math.min(fileBytes.length, 512);
-  let nullIdx = -1;
-  for(let i=0;i<searchLen;i++) { if(fileBytes[i]===0){nullIdx=i;break;} }
-  if(nullIdx > 0) {
+  let rawFileBytes = compressedBytes; // might be compressed or raw depending on c flag
+  let shouldDecompress = false;
+
+  const hdrSearchLen = Math.min(compressedBytes.length, 512);
+  let hdrNulIdx = -1;
+  for(let i=0;i<hdrSearchLen;i++) { if(compressedBytes[i]===0){hdrNulIdx=i;break;} }
+  if(hdrNulIdx > 0) {
     try {
-      const hdr = JSON.parse(new TextDecoder().decode(fileBytes.subarray(0, nullIdx)));
-      if(hdr && hdr.n) { embeddedName = hdr.n; outBytes = fileBytes.subarray(nullIdx + 1); }
-    } catch(e) {}
+      const hdr = JSON.parse(new TextDecoder().decode(compressedBytes.subarray(0, hdrNulIdx)));
+      if(hdr && hdr.n) {
+        embeddedName    = hdr.n;
+        shouldDecompress= hdr.c === 1;
+        rawFileBytes    = compressedBytes.subarray(hdrNulIdx + 1);
+      }
+    } catch(e) {
+      // No header (old format) — fall back: try decompressing the whole thing
+      shouldDecompress = true;
+      rawFileBytes     = compressedBytes;
+    }
+  } else {
+    // No NUL found — old format with no header, try decompress
+    shouldDecompress = true;
+  }
+
+  // ── Step 6: decompress only if header says so ────────────────────────────
+  let outBytes = rawFileBytes;
+  if(shouldDecompress) {
+    xsSetProgressLabel(progressId, `${fileName} — decompressing`);
+    xsUpdateProgress(progressId, 85, 'decompressing…');
+    await xsYield();
+    try {
+      outBytes = await xsDecompress(rawFileBytes);
+    } catch(e) {
+      outBytes = rawFileBytes; // decompression failed, use raw
+    }
   }
 
   xsUpdateProgress(progressId, 100, `done — ${fmt(outBytes.length)}`);
