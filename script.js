@@ -1280,7 +1280,7 @@ Uptime:   <span class="sh-number">${Math.floor(performance.now()/1000)}s</span>`
   },
   xs: {
     desc: 'Zero-width steganography encoder — hide text in invisible chars, password-protected',
-    usage: 'xs <enc|dec|inspect|strip|demo|sets> "text" [--password=pw] [--set=zw4] [--cover="visible text"]',
+    usage: 'xs <enc|dec|file|inspect|strip|demo|sets> [--password=pw] [--set=zw4] [--no-compress] [--short]',
     run(args){ XS.handle(args); }
   },
   bypass:   { desc:'Network filter bypass guide', usage:'bypass',
@@ -2826,26 +2826,55 @@ async function decodeAsync(encodedStr, {setId=DEFAULT_SET, password='', onProgre
   return text || null;
 }
 
+// ── Already-compressed extensions — skip deflate for these ───────────
+const XS_NOCOMPRESS_EXTS = new Set([
+  'zip','gz','tgz','bz2','xz','zst','br','lz4','lzma','7z','rar',
+  'jpg','jpeg','png','gif','webp','avif','heic','heif',
+  'mp3','mp4','mov','avi','mkv','webm','m4a','m4v','flac','opus','ogg',
+  'pdf','docx','xlsx','pptx','odt','ods','odp',
+  'wasm','apk','ipa','jar','war','ear',
+]);
+function xsShouldCompress(fileName, noCompressFlag) {
+  if(noCompressFlag) return false;
+  const ext = (fileName.split('.').pop()||'').toLowerCase();
+  return !XS_NOCOMPRESS_EXTS.has(ext);
+}
+
 // ── Chunked file encode pipeline ──────────────────────────
 // fileBytes: Uint8Array, returns Promise<string> (the encoded invisible string)
-async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileName}) {
+async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileName, noCompress=false, short=false}) {
   const totalOrig = fileBytes.length;
 
-  // Step 1: compress
-  xsSetProgressLabel(progressId, `${fileName} — compressing`);
-  xsUpdateProgress(progressId, 5, 'compressing…');
+  // ── Step 0: embed filename header  {"n":"file.ext","c":1}\x00 + fileBytes ──
+  const willCompress = xsShouldCompress(fileName, noCompress);
+  const header       = JSON.stringify({n: fileName, c: willCompress ? 1 : 0});
+  const headerBytes  = new TextEncoder().encode(header + '\x00');
+  const combined     = new Uint8Array(headerBytes.length + fileBytes.length);
+  combined.set(headerBytes, 0);
+  combined.set(fileBytes,   headerBytes.length);
+
+  // ── Step 1: compress or pass-through ──────────────────────────────────────
+  // Use vs8 (3 bits/char) for --short to minimise output length
+  const resolvedSet = short ? 'vs8' : (setId || DEFAULT_SET);
+
+  xsSetProgressLabel(progressId, `${fileName} — ${willCompress ? 'compressing' : 'skipping compress'}`);
+  xsUpdateProgress(progressId, 5, willCompress ? 'compressing…' : 'compression skipped');
   await xsYield();
 
   let compressed;
-  try {
-    compressed = await xsCompress(fileBytes);
-  } catch(e) {
-    compressed = fileBytes; // fallback
+  if(willCompress) {
+    try {
+      compressed = await xsCompress(combined);
+      if(compressed.length >= combined.length) compressed = combined; // already-random data
+    } catch(e) {
+      compressed = combined;
+    }
+  } else {
+    compressed = combined;
   }
 
-  const ratio = compressed.length / totalOrig;
-  const compressedMB = compressed.length / MB;
-  xsUpdateProgress(progressId, 15, `compressed ${fmt(totalOrig)} → ${fmt(compressed.length)} (${(ratio*100).toFixed(0)}%)`);
+  const ratio = compressed.length / (totalOrig || 1);
+  xsUpdateProgress(progressId, 15, `${willCompress ? 'compressed' : 'raw'} ${fmt(totalOrig)} → ${fmt(compressed.length)} (${(ratio*100).toFixed(0)}%)`);
   await xsYield();
 
   // Step 2: base64 encode compressed bytes
@@ -2885,7 +2914,7 @@ async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileN
 
   // Step 4: convert bytes → invisible chars (chunked)
   xsSetProgressLabel(progressId, `${fileName} — encoding`);
-  const def   = SETS[setId]||SETS[DEFAULT_SET];
+  const def   = SETS[resolvedSet]||SETS[DEFAULT_SET];
   const bpc   = def.bits;
   const chars = def.chars;
   const CHUNK = xsChunkSize(payloadBytes.length);
@@ -2928,12 +2957,12 @@ async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileN
   const result = parts.join('');
   xsUpdateProgress(progressId, 100, 'done');
   await xsYield();
-  return result;
+  return {encoded: result, setId: resolvedSet, willCompress};
 }
 
 // ── Chunked file decode pipeline ──────────────────────────
 // encodedStr: string, returns Promise<Uint8Array> (original file bytes)
-async function decodeFilePipeline(encodedStr, {setId, password, progressId, fileName}) {
+async function decodeFilePipeline(encodedStr, {setId, password, progressId, fileName}) { // returns {fileBytes, embeddedName} or null
   // Step 1: extract hidden portion
   xsSetProgressLabel(progressId, `${fileName} — extracting`);
   xsUpdateProgress(progressId, 2, 'locating payload…');
@@ -3025,9 +3054,20 @@ async function decodeFilePipeline(encodedStr, {setId, password, progressId, file
     fileBytes = compressedBytes; // not compressed, return raw
   }
 
-  xsUpdateProgress(progressId, 100, `done — ${fmt(fileBytes.length)}`);
+  // ── Parse embedded header ─────────────────────────────────────────────────
+  let embeddedName = null;
+  let outBytes     = fileBytes;
+  const nullIdx = fileBytes.indexOf(0);
+  if(nullIdx > 0 && nullIdx < 512) {
+    try {
+      const hdr = JSON.parse(new TextDecoder().decode(fileBytes.slice(0, nullIdx)));
+      if(hdr && hdr.n) { embeddedName = hdr.n; outBytes = fileBytes.slice(nullIdx + 1); }
+    } catch(e) {}
+  }
+
+  xsUpdateProgress(progressId, 100, `done — ${fmt(outBytes.length)}`);
   await xsYield();
-  return fileBytes;
+  return {fileBytes: outBytes, embeddedName};
 }
 
 
@@ -3197,11 +3237,17 @@ function cmdFile(args) {
   for(const a of rest) {
     const pw  = a.match(/^(?:--password|-p|pw|password)=(.+)$/i);
     const set = a.match(/^(?:--set|-s|set)=(.+)$/i);
-    if(pw)  fileOpts.password = pw[1].replace(/^['"`]|['"`]$/g,'');
-    if(set) fileOpts.setId    = set[1];
+    const nc  = /^(?:--no-compress|--nocompress|nocompress|nc)$/i.test(a);
+    const sh  = /^(?:--short|short)$/i.test(a);
+    if(pw)  fileOpts.password   = pw[1].replace(/^['"`]|['"`]$/g,'');
+    if(set) fileOpts.setId      = set[1];
+    if(nc)  fileOpts.noCompress = true;
+    if(sh)  fileOpts.short      = true;
   }
-  const setId    = fileOpts.setId    || DEFAULT_SET;
-  const password = fileOpts.password || '';
+  const setId      = fileOpts.setId      || DEFAULT_SET;
+  const password   = fileOpts.password   || '';
+  const noCompress = fileOpts.noCompress || false;
+  const short      = fileOpts.short      || false;
 
   appendBlock(`<span class="tag tag-xs">xs FILE ${mode.toUpperCase()}</span> Pick any file — zip, binary, image, anything…`,'info');
 
@@ -3215,35 +3261,42 @@ function cmdFile(args) {
       xsUpdateProgress(progressId, 1, 'reading file…');
 
       readFile(file).then(fileBytes => {
-        return encodeFilePipeline(fileBytes, {setId, password, progressId, fileName});
-      }).then(encoded => {
+        return encodeFilePipeline(fileBytes, {setId, password, progressId, fileName, noCompress, short});
+      }).then(res => {
         xsFinishProgress(progressId);
+        const encoded  = res.encoded || res; // object or legacy string
+        const usedSet  = res.setId   || setId;
+        const didComp  = res.willCompress;
+        const outFile  = fileName + '.xsenc.txt';
         const outLarge = encoded.length > MB;
-        const defName  = SETS[setId]?.name || setId;
+        const defName  = SETS[usedSet]?.name || usedSet;
 
         let html = `<div class="xs-card">`;
         html += `<div class="xs-header"><span class="tag tag-xs">xs FILE ENC</span> <span class="sh-string">${esc(fileName)}</span></div>`;
         html += `<div class="xs-meta-row">`;
         html += `<span class="xs-badge">${esc(defName)}</span>`;
         html += `<span class="xs-badge">${esc(file.type||'binary')}</span>`;
-        if(password) html += `<span class="xs-badge xs-badge-pw">&#128274; password</span>`;
-        if(window.CompressionStream) html += `<span class="xs-badge" style="background:rgba(0,255,136,0.07);border-color:rgba(0,255,136,0.2);color:var(--green)">&#9650; compressed</span>`;
+        if(password)  html += `<span class="xs-badge xs-badge-pw">&#128274; password</span>`;
+        if(didComp)   html += `<span class="xs-badge" style="background:rgba(0,255,136,0.07);border-color:rgba(0,255,136,0.2);color:var(--green)">&#9650; compressed</span>`;
+        if(!didComp)  html += `<span class="xs-badge" style="background:rgba(255,180,0,0.07);border-color:rgba(255,180,0,0.25);color:#ffb400">&#9651; raw (no compress)</span>`;
+        if(short)     html += `<span class="xs-badge" style="background:rgba(30,144,255,0.07);border-color:rgba(30,144,255,0.25);color:var(--blue-bright)">&#9654; short mode</span>`;
         html += `</div>`;
         html += `<div class="xs-stats">`;
         html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(file.size)}</span> original</span>`;
         html += `<span class="xs-stat"><span class="xs-stat-n">${fmt(encoded.length)}</span> encoded chars</span>`;
+        html += `<span class="xs-stat" title="embedded in payload">&#128196; <span class="xs-stat-n">${esc(fileName)}</span></span>`;
         html += `</div>`;
 
         if(outLarge) {
-          html += largeBar(encoded, `Encoded: ${fileName}`, fileName+'.xsenc.txt');
+          html += largeBar(encoded, `Encoded: ${fileName}`, outFile);
         } else {
           const cid = window._cpPut(encoded);
-          html += `<div class="xs-output-label">ENCODED OUTPUT <span class="xs-hint">(paste or export)</span></div>`;
+          html += `<div class="xs-output-label">ENCODED OUTPUT <span class="xs-hint">(filename embedded in payload)</span></div>`;
           html += `<div class="xs-output-box">${esc(encoded)}</div>`;
           html += `<div class="xs-footer">`;
           html += `<button class="proxy-btn" onclick="window._cp('${cid}')">&#128203; Copy</button>`;
-          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(fileName)}.xsenc.txt')">&#8681; Export .txt</button>`;
-          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(fileName)}.xsenc.txt')">&#128269; Open in window</button>`;
+          html += `<button class="proxy-btn" onclick="xsDownload(window._cpStore['${cid}'],'${esc(outFile)}')">&#8681; Export .txt</button>`;
+          html += `<button class="proxy-btn" onclick="xsOpenBlob(window._cpStore['${cid}'],'${esc(outFile)}')">&#128269; Open in window</button>`;
           html += `</div>`;
         }
         html += `</div>`;
@@ -3276,18 +3329,20 @@ function cmdFile(args) {
         }
         xsUpdateProgress(progressId, 3, `${invCount.toLocaleString()} invisible chars found`);
         return decodeFilePipeline(content, {setId, password, progressId, fileName});
-      }).then(fileBytes => {
-        if(!fileBytes) return;
+      }).then(result => {
+        if(!result) return;
         xsFinishProgress(progressId);
+        const {fileBytes, embeddedName} = result;
 
-        const origName = fileName.replace(/\.xsenc\.txt$/i,'');
-        const mime = file.type||'application/octet-stream';
-        const blob = new Blob([fileBytes], {type: mime});
+        // Prefer embedded name; fall back to stripping .xsenc.txt from carrier filename
+        const origName = embeddedName || fileName.replace(/\.xsenc\.txt$/i,'');
+        const blob = new Blob([fileBytes], {type:'application/octet-stream'});
         const url  = URL.createObjectURL(blob);
 
         let html = `<div class="xs-card">`;
         html += `<div class="xs-header"><span class="tag tag-xs">xs FILE DEC</span> <span class="sh-string">${esc(fileName)}</span></div>`;
         html += `<div class="xs-meta-row"><span class="xs-badge">file recovered</span>`;
+        if(embeddedName) html += `<span class="xs-badge" title="name recovered from payload">&#128196; ${esc(embeddedName)}</span>`;
         if(password) html += `<span class="xs-badge xs-badge-pw">&#128274; password used</span>`;
         html += `</div>`;
         html += `<div class="xs-stats">`;
@@ -3424,6 +3479,8 @@ function showHelp() {
 <tr><td><span class="sh-flag">--password=</span><span class="sh-string">secret</span></td><td>XOR password-protect the payload</td></tr>
 <tr><td><span class="sh-flag">--set=</span><span class="sh-string">zw4</span></td><td>Char set: zw2 zw4 vs8 tag combo</td></tr>
 <tr><td><span class="sh-flag">--cover=</span><span class="sh-string">"normal text"</span></td><td>Embed inside visible cover text</td></tr>
+<tr><td><span class="sh-flag">--no-compress</span></td><td>Skip compression — use for .zip .gz .jpg .toml etc.</td></tr>
+<tr><td><span class="sh-flag">--short</span></td><td>Shortest output: auto-selects vs8 (3 bits/char) set</td></tr>
 </table>
 <div style="margin-top:10px;color:var(--gray);font-size:11px;line-height:1.9">
 <span class="sh-comment"># Text encode/decode</span><br>
