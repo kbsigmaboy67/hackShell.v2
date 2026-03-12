@@ -2569,6 +2569,8 @@ function largeBar(content, label, filename) {
 // ── Compression (DeflateRaw via CompressionStream API) ────
 // Returns Promise<Uint8Array>
 async function xsCompress(uint8) {
+  // Always ensure we have a Uint8Array going in
+  if(!(uint8 instanceof Uint8Array)) uint8 = new Uint8Array(uint8);
   if(!window.CompressionStream) return uint8; // fallback: no compression
   const cs   = new CompressionStream('deflate-raw');
   const w    = cs.writable.getWriter();
@@ -2851,20 +2853,20 @@ async function encodeFilePipeline(fileBytes, {setId, password, progressId, fileN
   xsUpdateProgress(progressId, 18, 'converting to base64…');
   await xsYield();
 
-  // Chunked base64 to avoid string size explosion
-  const BCHUNK = 65536;
-  const b64parts = [];
+  // Build binary string in safe chunks then single btoa() — chunked btoa breaks padding
+  const BCHUNK = 8192;
+  const binParts = [];
   for(let i=0;i<compressed.length;i+=BCHUNK) {
-    const slice = compressed.subarray(i, Math.min(i+BCHUNK, compressed.length));
-    let bin = '';
-    for(let j=0;j<slice.length;j++) bin += String.fromCharCode(slice[j]);
-    b64parts.push(btoa(bin));
-    if(i % (BCHUNK*4) === 0 && i > 0) {
+    const end = Math.min(i+BCHUNK, compressed.length);
+    const slice = [];
+    for(let j=i;j<end;j++) slice.push(compressed[j]);
+    binParts.push(String.fromCharCode.apply(null, slice));
+    if(i % (BCHUNK*16) === 0 && i > 0) {
       xsUpdateProgress(progressId, 18 + Math.round(i/compressed.length*7), 'base64…');
       await xsYield();
     }
   }
-  const b64payload = b64parts.join('');
+  const b64payload = btoa(binParts.join(''));
   xsUpdateProgress(progressId, 25, `${fmt(b64payload.length)} b64 payload`);
   await xsYield();
 
@@ -3040,20 +3042,13 @@ function pickFile(accept='*/*') {
   });
 }
 
-// Read file: text or binary (→base64 data URL)
+// Read file → Uint8Array (raw bytes, for chunked pipeline)
 function readFile(file) {
   return new Promise((res,rej) => {
     const reader = new FileReader();
     reader.onerror = () => rej(new Error('Read failed'));
-    reader.onload  = e => res(e.target.result);
-    // Always read as ArrayBuffer, then convert — handles all filetypes uniformly
+    reader.onload  = e => res(new Uint8Array(e.target.result));
     reader.readAsArrayBuffer(file);
-  }).then(buf => {
-    // Convert ArrayBuffer to binary string, then base64
-    const bytes = new Uint8Array(buf);
-    let bin = '';
-    for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin); // raw base64, no data-URL prefix
   });
 }
 
